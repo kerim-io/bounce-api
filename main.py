@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from db.database import create_db_and_tables
-from api.routes import auth, posts, users, checkins, websocket, likes
+from api.routes import auth, posts, users, checkins, websocket, likes, geocoding
 from core.config import settings
 
 
@@ -34,6 +34,7 @@ app.include_router(users.router)
 app.include_router(checkins.router)
 app.include_router(websocket.router)
 app.include_router(likes.router)
+app.include_router(geocoding.router)
 
 
 @app.get("/")

@@ -1,0 +1,129 @@
+# Example: How to add pydantic-llm-mixin to your project's pyproject.toml
+#
+# This shows how to install the private GitHub repo in your own projects.
+# Copy the relevant sections below into your pyproject.toml.
+
+# ============================================================================
+# METHOD 1: Using UV Sources (Recommended for Railway/Production)
+# ============================================================================
+# Add to your pyproject.toml:
+
+[project]
+dependencies = [
+    "pydantic-llm-mixin",
+    # ... your other dependencies
+]
+
+[tool.uv.sources]
+pydantic-llm-mixin = { git = "https://github.com/aceeyz/pydantic-llm-mixin.git", branch = "main" }
+
+# Railway automatically injects GITHUB_TOKEN at build time
+# UV will use it to authenticate: https://GITHUB_TOKEN@github.com/...
+
+
+# ============================================================================
+# METHOD 2: Direct Git URL (For local development)
+# ============================================================================
+# Using uv add command with GITHUB_TOKEN:
+
+# In your terminal:
+# export GITHUB_TOKEN="ghp_your_token_here"
+# uv add "git+https://$GITHUB_TOKEN@github.com/aceeyz/pydantic-llm-mixin.git"
+
+# Or in pyproject.toml (if you don't use tool.uv.sources):
+[project]
+dependencies = [
+    "pydantic-llm-mixin @ git+https://github.com/aceeyz/pydantic-llm-mixin.git@main",
+]
+
+
+# ============================================================================
+# METHOD 3: Local Development (Editable Install)
+# ============================================================================
+# For local development when both repos are cloned side-by-side:
+
+# Directory structure:
+#   /your/projects/
+#     ├── pydantic-llm-mixin/
+#     └── your-project/
+
+# In your project's pyproject.toml:
+[tool.uv.sources]
+pydantic-llm-mixin = { path = "../pydantic-llm-mixin", editable = true }
+
+# Or use Makefile-style toggle (like Mari-OS pattern):
+# make dep-local   -> switches to ../pydantic-llm-mixin
+# make dep-github  -> switches to GitHub
+
+
+# ============================================================================
+# EXAMPLE: Complete pyproject.toml with pydantic-llm-mixin
+# ============================================================================
+
+[project]
+name = "your-project"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0.0",
+    "pydantic-llm-mixin",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.3.0",
+]
+
+[tool.uv.sources]
+# Private GitHub repo - Railway auto-injects GITHUB_TOKEN
+pydantic-llm-mixin = { git = "https://github.com/aceeyz/pydantic-llm-mixin.git", branch = "main" }
+
+
+# ============================================================================
+# DOCKERFILE EXAMPLE: Multi-stage build with GitHub token
+# ============================================================================
+
+# FROM python:3.11-slim AS base
+#
+# # Install UV
+# RUN pip install uv
+#
+# # Stage 2: Dependencies with GitHub auth
+# FROM base AS deps
+#
+# ARG GITHUB_TOKEN
+# WORKDIR /app
+#
+# # Configure git for GitHub authentication (same as Mari-OS pattern)
+# RUN if [ -n "$GITHUB_TOKEN" ]; then \
+#       git config --global url."https://${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"; \
+#     fi
+#
+# COPY pyproject.toml ./
+# RUN uv venv && uv sync
+#
+# # Clean up credentials
+# RUN rm -f ~/.git-credentials
+#
+# # Stage 3: Production
+# FROM deps AS production
+# COPY . .
+# CMD ["uv", "run", "python", "main.py"]
+
+
+# ============================================================================
+# RAILWAY DEPLOYMENT
+# ============================================================================
+
+# Railway automatically provides GITHUB_TOKEN as an environment variable.
+# UV will use it to authenticate when installing from private repos.
+#
+# No special configuration needed - just:
+# 1. Add pydantic-llm-mixin to dependencies
+# 2. Add [tool.uv.sources] section with GitHub URL
+# 3. Push to GitHub
+# 4. Railway deploys automatically

@@ -105,6 +105,7 @@ async def websocket_feed(websocket: WebSocket, token: str = Query(...)):
         # Listen for messages
         while True:
             data = await websocket.receive_json()
+            print(f"📨 WebSocket received message: {data}")
 
             # Handle new post
             if data.get("type") == "new_post":

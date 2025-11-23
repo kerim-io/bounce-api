@@ -28,10 +28,15 @@ class PasscodeAuthRequest(BaseModel):
 
 class AuthResponse(BaseModel):
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str
     user_id: int
     email: Optional[str]
     has_profile: bool
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
 
 
 @router.post("/apple", response_model=AuthResponse)
@@ -82,6 +87,7 @@ async def apple_signin(
 
         return AuthResponse(
             access_token=access_token,
+            refresh_token=refresh_token_str,
             token_type="bearer",
             user_id=user.id,
             email=user.email,
@@ -138,41 +144,58 @@ async def passcode_auth(
     )
 
 
-@router.post("/apple/refresh", response_model=AuthResponse)
+@router.post("/refresh", response_model=AuthResponse)
 async def refresh_token_endpoint(
-    request: AppleAuthRequest,
+    request: RefreshTokenRequest,
     db: AsyncSession = Depends(get_async_session)
 ):
-    """Refresh access token"""
+    """
+    Refresh access token using refresh_token.
+
+    iOS should call this when access_token expires (401 error).
+    """
     try:
-        payload = decode_token(request.code)
+        # Verify refresh token is valid and not expired
+        payload = decode_token(request.refresh_token)
         user_id = int(payload.get("sub"))
 
+        # Check if refresh token exists in database and isn't expired
+        result = await db.execute(
+            select(RefreshToken).where(
+                RefreshToken.token == request.refresh_token,
+                RefreshToken.user_id == user_id,
+                RefreshToken.expires_at > datetime.utcnow()
+            )
+        )
+        refresh_token_obj = result.scalar_one_or_none()
+
+        if not refresh_token_obj:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired refresh token"
+            )
+
+        # Get user
         result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
 
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
+        # Create new access token (keep same refresh token)
         access_token = create_access_token({"sub": str(user.id)})
-        refresh_token_str = create_refresh_token({"sub": str(user.id)})
-
-        refresh_token_obj = RefreshToken(
-            user_id=user.id,
-            token=refresh_token_str,
-            expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-        )
-        db.add(refresh_token_obj)
-        await db.commit()
 
         return AuthResponse(
             access_token=access_token,
+            refresh_token=request.refresh_token,  # Return same refresh token
             token_type="bearer",
             user_id=user.id,
             email=user.email,
             has_profile=user.has_profile
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -1,0 +1,22 @@
+# Railway Configuration for pydantic-llm-mixin
+# Deploy to Railway: https://railway.com?referralCode=d3k_vU
+
+[build]
+# Use Dockerfile for multi-stage build (follows Mari-OS patterns)
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Default: Run FastAPI example server
+# Override in Railway dashboard or change Dockerfile CMD for custom apps
+startCommand = "sh -c 'uv run uvicorn examples.railway_deployment:app --host 0.0.0.0 --port ${PORT:-8000}'"
+
+# Restart policy
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
+
+[[healthcheck]]
+# Railway healthcheck endpoint
+path = "/"
+timeout = 100
+interval = 60

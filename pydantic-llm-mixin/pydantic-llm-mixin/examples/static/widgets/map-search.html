@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Geocoding Map Widget</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #f5f5f5;
+        }
+
+        #widget-container {
+            width: 100%;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #search-bar {
+            background: white;
+            padding: 15px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+            z-index: 1000;
+        }
+
+        #search-input {
+            width: 100%;
+            padding: 12px 16px;
+            font-size: 16px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        #search-input:focus {
+            border-color: #4285f4;
+        }
+
+        #map {
+            flex: 1;
+            width: 100%;
+        }
+
+        .info-window {
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .info-window h3 {
+            margin: 0 0 10px 0;
+            color: #202124;
+            font-size: 16px;
+        }
+
+        .info-window p {
+            margin: 5px 0;
+            color: #5f6368;
+        }
+
+        .info-window strong {
+            color: #202124;
+        }
+
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 20px 40px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 2000;
+            display: none;
+        }
+
+        #loading.active {
+            display: block;
+        }
+
+        .error-message {
+            position: absolute;
+            top: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #f44336;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            z-index: 2000;
+            display: none;
+        }
+
+        .error-message.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div id="widget-container">
+        <div id="search-bar">
+            <input
+                id="search-input"
+                type="text"
+                placeholder="Search for a location..."
+                autocomplete="off"
+            >
+        </div>
+        <div id="map"></div>
+        <div id="loading">Loading...</div>
+        <div id="error-message" class="error-message"></div>
+    </div>
+
+    <script>
+        // Configuration from URL parameters
+        const urlParams = new URLSearchParams(window.location.search);
+        const API_BASE = urlParams.get('api') || window.location.origin;
+        const API_KEY = urlParams.get('key') || '';
+        const TOKEN = urlParams.get('token') || '';
+        const DEFAULT_LAT = parseFloat(urlParams.get('lat')) || 40.7128;
+        const DEFAULT_LNG = parseFloat(urlParams.get('lng')) || -74.0060;
+        const DEFAULT_ZOOM = parseInt(urlParams.get('zoom')) || 13;
+
+        let map;
+        let geocoder;
+        let markers = [];
+        let infoWindow;
+
+        function initMap() {
+            // Initialize map
+            map = new google.maps.Map(document.getElementById('map'), {
+                center: { lat: DEFAULT_LAT, lng: DEFAULT_LNG },
+                zoom: DEFAULT_ZOOM,
+                mapTypeControl: true,
+                streetViewControl: true,
+                fullscreenControl: true,
+            });
+
+            geocoder = new google.maps.Geocoder();
+            infoWindow = new google.maps.InfoWindow();
+
+            // Click to reverse geocode
+            map.addListener('click', async (event) => {
+                const lat = event.latLng.lat();
+                const lng = event.latLng.lng();
+                await reverseGeocode(lat, lng);
+            });
+
+            // Search input handler
+            const searchInput = document.getElementById('search-input');
+            const autocomplete = new google.maps.places.Autocomplete(searchInput);
+            autocomplete.bindTo('bounds', map);
+
+            autocomplete.addListener('place_changed', () => {
+                const place = autocomplete.getPlace();
+
+                if (!place.geometry) {
+                    // User entered name that was not suggested
+                    geocodeAddress(place.name);
+                    return;
+                }
+
+                // Place has geometry
+                if (place.geometry.viewport) {
+                    map.fitBounds(place.geometry.viewport);
+                } else {
+                    map.setCenter(place.geometry.location);
+                    map.setZoom(17);
+                }
+
+                addMarker(place.geometry.location, {
+                    name: place.name,
+                    formatted_address: place.formatted_address,
+                });
+            });
+        }
+
+        async function geocodeAddress(address) {
+            showLoading(true);
+
+            try {
+                const response = await fetch(`${API_BASE}/geocode?address=${encodeURIComponent(address)}`, {
+                    headers: TOKEN ? { 'Authorization': `Bearer ${TOKEN}` } : {}
+                });
+
+                if (!response.ok) {
+                    throw new Error('Geocoding failed');
+                }
+
+                const data = await response.json();
+                const location = {
+                    lat: data.coordinates.latitude,
+                    lng: data.coordinates.longitude
+                };
+
+                map.setCenter(location);
+                map.setZoom(15);
+
+                addMarker(location, {
+                    formatted_address: data.address.formatted_address,
+                    city: data.address.city,
+                    state: data.address.state,
+                    country: data.address.country,
+                });
+
+            } catch (error) {
+                showError('Failed to geocode address');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        async function reverseGeocode(lat, lng) {
+            showLoading(true);
+
+            try {
+                const response = await fetch(`${API_BASE}/reverse?lat=${lat}&lon=${lng}`, {
+                    headers: TOKEN ? { 'Authorization': `Bearer ${TOKEN}` } : {}
+                });
+
+                if (!response.ok) {
+                    throw new Error('Reverse geocoding failed');
+                }
+
+                const data = await response.json();
+                const location = { lat, lng };
+
+                addMarker(location, {
+                    formatted_address: data.address.formatted_address,
+                    street: `${data.address.street_number || ''} ${data.address.street_name || ''}`.trim(),
+                    city: data.address.city,
+                    state: data.address.state,
+                    postal_code: data.address.postal_code,
+                    country: data.address.country,
+                });
+
+            } catch (error) {
+                showError('Failed to reverse geocode location');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function addMarker(location, info) {
+            // Clear existing markers
+            markers.forEach(marker => marker.setMap(null));
+            markers = [];
+
+            // Create new marker
+            const marker = new google.maps.Marker({
+                position: location,
+                map: map,
+                animation: google.maps.Animation.DROP,
+            });
+
+            markers.push(marker);
+
+            // Create info window content
+            let content = '<div class="info-window">';
+            content += `<h3>${info.name || 'Location Details'}</h3>`;
+            content += `<p><strong>Address:</strong><br>${info.formatted_address || 'N/A'}</p>`;
+
+            if (info.street) {
+                content += `<p><strong>Street:</strong> ${info.street}</p>`;
+            }
+            if (info.city) {
+                content += `<p><strong>City:</strong> ${info.city}</p>`;
+            }
+            if (info.state) {
+                content += `<p><strong>State:</strong> ${info.state}</p>`;
+            }
+            if (info.postal_code) {
+                content += `<p><strong>Postal Code:</strong> ${info.postal_code}</p>`;
+            }
+            if (info.country) {
+                content += `<p><strong>Country:</strong> ${info.country}</p>`;
+            }
+
+            content += `<p><strong>Coordinates:</strong><br>${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}</p>`;
+            content += '</div>';
+
+            infoWindow.setContent(content);
+            infoWindow.open(map, marker);
+        }
+
+        function showLoading(show) {
+            const loading = document.getElementById('loading');
+            if (show) {
+                loading.classList.add('active');
+            } else {
+                loading.classList.remove('active');
+            }
+        }
+
+        function showError(message) {
+            const errorEl = document.getElementById('error-message');
+            errorEl.textContent = message;
+            errorEl.classList.add('active');
+            setTimeout(() => {
+                errorEl.classList.remove('active');
+            }, 3000);
+        }
+
+        // Initialize on load
+        window.initMap = initMap;
+    </script>
+
+    <script async defer
+        src="https://maps.googleapis.com/maps/api/js?key=YOUR_GOOGLE_MAPS_JS_API_KEY&libraries=places&callback=initMap">
+    </script>
+</body>
+</html>

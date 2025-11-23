@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Location Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        button {
+            padding: 14px 28px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        #map {
+            width: 100%;
+            height: 500px;
+            border-radius: 8px;
+            display: none;
+        }
+
+        #map.show {
+            display: block;
+        }
+
+        .info {
+            background: #f9f9f9;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin-top: 20px;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .info.show {
+            display: block;
+        }
+
+        .info h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+
+        .info-item {
+            display: flex;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        .info-item .label {
+            color: #666;
+            min-width: 120px;
+            font-weight: 500;
+        }
+
+        .info-item .value {
+            color: #333;
+        }
+
+        .error {
+            background: #fee;
+            border: 1px solid #fcc;
+            color: #c33;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 20px;
+            display: none;
+        }
+
+        .error.show {
+            display: block;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+            display: none;
+        }
+
+        .loading.show {
+            display: block;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h1>📍 Your Location</h1>
+            <p class="subtitle">Click the button below to share your location and see it on the map</p>
+
+            <div class="hint" style="background: #fff3cd; border-color: #ffc107; color: #856404;">
+                <strong>⚠️ Note:</strong> Maps JavaScript API requires billing enabled in Google Cloud Console. If the map doesn't load, you'll still see your coordinates and address below.
+            </div>
+
+            <button id="getLocationBtn">Show My Location</button>
+
+            <div id="loading" class="loading">
+                <div class="spinner"></div>
+                Getting your location...
+            </div>
+
+            <div id="error" class="error"></div>
+
+            <div id="map"></div>
+
+            <div id="info" class="info">
+                <h3>Location Details</h3>
+                <div id="locationDetails"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_KEY = 'GOOGLE_MAPS_API_KEY_PLACEHOLDER';
+        let map;
+        let marker;
+
+        document.getElementById('getLocationBtn').addEventListener('click', getLocation);
+
+        function getLocation() {
+            const loading = document.getElementById('loading');
+            const error = document.getElementById('error');
+            const mapEl = document.getElementById('map');
+            const info = document.getElementById('info');
+
+            // Reset UI
+            error.classList.remove('show');
+            mapEl.classList.remove('show');
+            info.classList.remove('show');
+            loading.classList.add('show');
+
+            if (!navigator.geolocation) {
+                showError('Geolocation is not supported by your browser');
+                return;
+            }
+
+            navigator.geolocation.getCurrentPosition(
+                position => {
+                    loading.classList.remove('show');
+                    const lat = position.coords.latitude;
+                    const lng = position.coords.longitude;
+                    showMap(lat, lng);
+                    reverseGeocode(lat, lng);
+                },
+                err => {
+                    loading.classList.remove('show');
+                    showError('Unable to retrieve your location: ' + err.message);
+                }
+            );
+        }
+
+        function showMap(lat, lng) {
+            const mapEl = document.getElementById('map');
+            mapEl.classList.add('show');
+
+            if (!map) {
+                map = new google.maps.Map(mapEl, {
+                    center: { lat, lng },
+                    zoom: 15,
+                    mapTypeControl: true,
+                    streetViewControl: true,
+                    fullscreenControl: true,
+                });
+            } else {
+                map.setCenter({ lat, lng });
+            }
+
+            if (marker) {
+                marker.setMap(null);
+            }
+
+            marker = new google.maps.Marker({
+                position: { lat, lng },
+                map: map,
+                title: 'Your Location',
+                animation: google.maps.Animation.DROP,
+            });
+
+            const infoWindow = new google.maps.InfoWindow({
+                content: `<div style="padding: 10px;">
+                    <h3 style="margin: 0 0 10px 0;">You are here!</h3>
+                    <p style="margin: 0; color: #666;">${lat.toFixed(6)}, ${lng.toFixed(6)}</p>
+                </div>`
+            });
+
+            marker.addListener('click', () => {
+                infoWindow.open(map, marker);
+            });
+
+            infoWindow.open(map, marker);
+        }
+
+        function reverseGeocode(lat, lng) {
+            const geocoder = new google.maps.Geocoder();
+
+            geocoder.geocode({ location: { lat, lng } }, (results, status) => {
+                if (status === 'OK' && results[0]) {
+                    showLocationInfo(lat, lng, results[0]);
+                    updateMarkerLabel(lat, lng, results[0]);
+                    findNearbyBusinesses(lat, lng);
+                } else {
+                    showLocationInfo(lat, lng, null);
+                }
+            });
+        }
+
+        function updateMarkerLabel(lat, lng, geocodeResult) {
+            if (marker && infoWindow) {
+                const address = geocodeResult.formatted_address;
+                marker.setTitle(address);
+                infoWindow.setContent(`<div style="padding: 10px;">
+                    <h3 style="margin: 0 0 10px 0; font-size: 14px;">${address}</h3>
+                    <p style="margin: 0; color: #666; font-size: 12px;">${lat.toFixed(6)}, ${lng.toFixed(6)}</p>
+                </div>`);
+            }
+        }
+
+        function findNearbyBusinesses(lat, lng) {
+            const service = new google.maps.places.PlacesService(map);
+            const request = {
+                location: { lat, lng },
+                radius: 100, // 100 meters
+                type: 'establishment'
+            };
+
+            service.nearbySearch(request, (results, status) => {
+                if (status === google.maps.places.PlacesServiceStatus.OK && results.length > 0) {
+                    const nearestBusiness = results[0];
+                    const businessLat = nearestBusiness.geometry.location.lat();
+                    const businessLng = nearestBusiness.geometry.location.lng();
+
+                    // Update marker to business location
+                    marker.setPosition({ lat: businessLat, lng: businessLng });
+                    marker.setTitle(nearestBusiness.name);
+                    map.setCenter({ lat: businessLat, lng: businessLng });
+
+                    infoWindow.setContent(`<div style="padding: 10px;">
+                        <h3 style="margin: 0 0 10px 0; font-size: 14px;">${nearestBusiness.name}</h3>
+                        <p style="margin: 0 0 5px 0; color: #666; font-size: 12px;">${nearestBusiness.vicinity || ''}</p>
+                        <p style="margin: 0; color: #999; font-size: 11px;">Nearest business to your location</p>
+                    </div>`);
+                    infoWindow.open(map, marker);
+                }
+            });
+        }
+
+        function showLocationInfo(lat, lng, geocodeResult) {
+            const info = document.getElementById('info');
+            const details = document.getElementById('locationDetails');
+
+            let html = `
+                <div class="info-item">
+                    <span class="label">Coordinates:</span>
+                    <span class="value">${lat.toFixed(6)}, ${lng.toFixed(6)}</span>
+                </div>
+            `;
+
+            if (geocodeResult) {
+                html += `
+                    <div class="info-item">
+                        <span class="label">Address:</span>
+                        <span class="value">${geocodeResult.formatted_address}</span>
+                    </div>
+                `;
+
+                const components = geocodeResult.address_components;
+                const getComponent = (type) => {
+                    const comp = components.find(c => c.types.includes(type));
+                    return comp ? comp.long_name : null;
+                };
+
+                const city = getComponent('locality') || getComponent('administrative_area_level_2');
+                const state = getComponent('administrative_area_level_1');
+                const country = getComponent('country');
+                const postalCode = getComponent('postal_code');
+
+                if (city) {
+                    html += `
+                        <div class="info-item">
+                            <span class="label">City:</span>
+                            <span class="value">${city}</span>
+                        </div>
+                    `;
+                }
+
+                if (state) {
+                    html += `
+                        <div class="info-item">
+                            <span class="label">State:</span>
+                            <span class="value">${state}</span>
+                        </div>
+                    `;
+                }
+
+                if (postalCode) {
+                    html += `
+                        <div class="info-item">
+                            <span class="label">Postal Code:</span>
+                            <span class="value">${postalCode}</span>
+                        </div>
+                    `;
+                }
+
+                if (country) {
+                    html += `
+                        <div class="info-item">
+                            <span class="label">Country:</span>
+                            <span class="value">${country}</span>
+                        </div>
+                    `;
+                }
+            }
+
+            details.innerHTML = html;
+            info.classList.add('show');
+        }
+
+        function showError(message) {
+            const error = document.getElementById('error');
+            error.textContent = message;
+            error.classList.add('show');
+        }
+    </script>
+
+    <script async defer
+        src="https://maps.googleapis.com/maps/api/js?key=GOOGLE_MAPS_API_KEY_PLACEHOLDER&libraries=places">
+    </script>
+</body>
+</html>

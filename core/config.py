@@ -29,4 +29,10 @@ class Settings:
     BASEL_LON: float = float(os.getenv("BASEL_LON", "-80.1300"))
     BASEL_RADIUS_KM: float = float(os.getenv("BASEL_RADIUS_KM", "5"))
 
+    # QR Code
+    QR_SECRET_SALT: str = os.getenv("QR_SECRET_SALT", "change-this-qr-salt-in-production")
+
+    # Google Maps API
+    GOOGLE_MAPS_API_KEY: str = os.getenv("GOOGLE_MAPS_API_KEY", "")
+
 settings = Settings()

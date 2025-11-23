@@ -19,6 +19,19 @@ class User(Base):
     email = Column(String(255), nullable=True)
     profile_picture = Column(String, nullable=True)
 
+    # Privacy settings for Art Basel Miami access control
+    phone_visible = Column(Boolean, default=False, nullable=False)
+    email_visible = Column(Boolean, default=False, nullable=False)
+
+    # Geolocation tracking for canPost (Art Basel Miami attendees)
+    can_post = Column(Boolean, default=False, nullable=False)
+    last_location_lat = Column(Float, nullable=True)
+    last_location_lon = Column(Float, nullable=True)
+    last_location_update = Column(DateTime(timezone=True), nullable=True)
+
+    # QR Code token for mutual connections
+    qr_token = Column(String(64), unique=True, index=True, nullable=True)
+
     # Legacy fields
     username = Column(String(50), nullable=True)
     bio = Column(String(500), nullable=True)

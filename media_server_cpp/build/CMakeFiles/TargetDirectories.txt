@@ -1,0 +1,7 @@
+/Users/kerim/PycharmProjects/bit_basel_backend/media_server_cpp/build/CMakeFiles/media_server.dir
+/Users/kerim/PycharmProjects/bit_basel_backend/media_server_cpp/build/CMakeFiles/edit_cache.dir
+/Users/kerim/PycharmProjects/bit_basel_backend/media_server_cpp/build/CMakeFiles/rebuild_cache.dir
+/Users/kerim/PycharmProjects/bit_basel_backend/media_server_cpp/build/CMakeFiles/list_install_components.dir
+/Users/kerim/PycharmProjects/bit_basel_backend/media_server_cpp/build/CMakeFiles/install.dir
+/Users/kerim/PycharmProjects/bit_basel_backend/media_server_cpp/build/CMakeFiles/install/local.dir
+/Users/kerim/PycharmProjects/bit_basel_backend/media_server_cpp/build/CMakeFiles/install/strip.dir
