@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from db.database import get_async_session
 from db.models import Post, Like, User
 from api.dependencies import get_current_user
+from api.routes.websocket import manager
 
 router = APIRouter(prefix="/posts", tags=["likes"])
 
@@ -54,6 +55,16 @@ async def like_post(
         select(func.count(Like.id)).where(Like.post_id == post_id)
     )
     likes_count = count_result.scalar()
+
+    # Broadcast like update to all connected clients via WebSocket
+    await manager.broadcast({
+        "type": "like_update",
+        "post_id": post_id,
+        "likes_count": likes_count,
+        "is_liked_by_current_user": is_liked
+    })
+
+    print(f"🔔 Broadcasting like update: post_id={post_id}, likes_count={likes_count}, is_liked={is_liked}")
 
     return LikeResponse(likes_count=likes_count, is_liked=is_liked)
 

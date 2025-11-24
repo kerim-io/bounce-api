@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  mediasoup-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bitbasel-mediasoup
+    ports:
+      - "9001:9001"  # HTTP API
+      - "9002:9002"  # WebSocket
+      - "40000-40100:40000-40100/udp"  # RTC ports (sample range)
+      - "40000-40100:40000-40100/tcp"
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - ./config.json:/app/config.json
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - bitbasel-network
+
+networks:
+  bitbasel-network:
+    driver: bridge

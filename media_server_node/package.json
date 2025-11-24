@@ -1,0 +1,38 @@
+{
+  "name": "bitbasel-mediasoup-server",
+  "version": "1.0.0",
+  "description": "mediasoup-based WebRTC media server for BitBasel livestreaming",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "start": "node dist/server.js",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "webrtc",
+    "mediasoup",
+    "livestream",
+    "sfu"
+  ],
+  "author": "BitBasel",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^4.18.2",
+    "mediasoup": "^3.14.0",
+    "uuid": "^9.0.1",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.11.0",
+    "@types/uuid": "^9.0.7",
+    "@types/ws": "^8.5.10",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

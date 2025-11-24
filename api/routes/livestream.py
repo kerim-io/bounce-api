@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 
 MEDIA_SERVER_URL = os.getenv("MEDIA_SERVER_URL", "http://localhost:9001")
 
+# Health check cache to prevent log spam
+_media_server_health = {
+    "available": True,
+    "last_check": 0,
+    "check_interval": 30  # Only retry every 30 seconds when down
+}
+
 
 class LiveUserResponse(BaseModel):
     id: int
