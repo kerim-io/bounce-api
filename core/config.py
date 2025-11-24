@@ -5,10 +5,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Settings:
-    DATABASE_URL: str = os.getenv(
-        "DATABASE_URL",
-        "postgresql+asyncpg://kerim@localhost:5432/artbasel_db"
-    )
+    # Railway provides DATABASE_URL as postgresql://, we need to convert to postgresql+asyncpg://
+    _db_url = os.getenv("DATABASE_URL", "postgresql+asyncpg://kerim@localhost:5432/artbasel_db")
+    DATABASE_URL: str = _db_url.replace("postgresql://", "postgresql+asyncpg://") if _db_url.startswith("postgresql://") else _db_url
 
     SECRET_KEY: str = os.getenv("SECRET_KEY", "change-this-secret-key-in-production")
     ALGORITHM: str = os.getenv("ALGORITHM", "HS256")
