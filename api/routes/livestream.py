@@ -2,15 +2,19 @@ from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
+import logging
+import aiohttp
+import asyncio
+import os
+
 from db.database import get_async_session
 from db.models import User, Livestream
 from services.auth_service import decode_token
 from pydantic import BaseModel
-import aiohttp
-import os
 
 router = APIRouter(prefix="/livestream", tags=["livestream"])
+logger = logging.getLogger(__name__)
 
 MEDIA_SERVER_URL = os.getenv("MEDIA_SERVER_URL", "http://localhost:9001")
 
@@ -36,41 +40,46 @@ async def get_active_livestreams(
     try:
         # Call the media server to get active rooms
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{MEDIA_SERVER_URL}/stats") as resp:
-                if resp.status != 200:
-                    return []
+            try:
+                async with session.get(f"{MEDIA_SERVER_URL}/stats", timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                    if resp.status != 200:
+                        logger.warning("Media server returned non-200 status, returning empty list")
+                        return []
 
-                stats = await resp.json()
-                active_rooms = stats.get("rooms", [])
+                    stats = await resp.json()
+                    active_rooms = stats.get("rooms", [])
 
-                if not active_rooms:
-                    return []
+                    if not active_rooms:
+                        return []
 
-                # Get user info for each active room
-                live_users = []
-                for room in active_rooms:
-                    room_id = room.get("room_id")
-                    host_id = room.get("host_id")
+                    # Get user info for each active room
+                    live_users = []
+                    for room in active_rooms:
+                        room_id = room.get("room_id")
+                        host_id = room.get("host_id")
 
-                    if not host_id:
-                        continue
+                        if not host_id:
+                            continue
 
-                    # Get user from database
-                    result = await db.execute(select(User).where(User.id == host_id))
-                    user = result.scalar_one_or_none()
+                        # Get user from database
+                        result = await db.execute(select(User).where(User.id == host_id))
+                        user = result.scalar_one_or_none()
 
-                    if user:
-                        live_users.append(LiveUserResponse(
-                            id=user.id,
-                            user_id=user.id,
-                            username=user.nickname or user.username or user.email or f"user_{user.id}",
-                            room_id=room_id,
-                            profile_pic_url=user.profile_picture
-                        ))
+                        if user:
+                            live_users.append(LiveUserResponse(
+                                id=user.id,
+                                user_id=user.id,
+                                username=user.nickname or user.username or user.email or f"user_{user.id}",
+                                room_id=room_id,
+                                profile_pic_url=user.profile_picture
+                            ))
 
-                return live_users
+                    return live_users
+            except (aiohttp.ClientConnectorError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.warning(f"Media server unavailable: {str(e)}")
+                return []
     except Exception as e:
-        print(f"Error fetching active livestreams: {e}")
+        logger.error("Error fetching active livestreams", exc_info=True, extra={"error": str(e)})
         return []
 
 
@@ -93,7 +102,8 @@ async def start_livestream(
     token = authorization.split(" ")[1]
 
     try:
-        user_id = decode_token(token)
+        payload = decode_token(token)
+        user_id = int(payload.get("sub"))
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
 
@@ -104,45 +114,53 @@ async def start_livestream(
                 "host_user_id": str(user_id)
             }
 
-            async with session.post(
-                f"{MEDIA_SERVER_URL}/room/create",
-                headers={"Authorization": authorization},
-                json=payload
-            ) as resp:
-                if resp.status != 201:
-                    text = await resp.text()
-                    raise HTTPException(status_code=resp.status, detail=f"Media server error: {text}")
+            try:
+                async with session.post(
+                    f"{MEDIA_SERVER_URL}/room/create",
+                    headers={"Authorization": authorization},
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as resp:
+                    if resp.status != 201:
+                        text = await resp.text()
+                        raise HTTPException(status_code=resp.status, detail=f"Media server error: {text}")
 
-                data = await resp.json()
-                room_id = data.get("room_id")
+                    data = await resp.json()
+                    room_id = data.get("room_id")
 
-                if not room_id:
-                    raise HTTPException(status_code=500, detail="No room_id returned from media server")
+                    if not room_id:
+                        raise HTTPException(status_code=500, detail="No room_id returned from media server")
 
-                # Save livestream to database
-                livestream = Livestream(
-                    user_id=user_id,
-                    room_id=room_id,
-                    post_id=f"post_{user_id}",
-                    status='active'
-                )
-                db.add(livestream)
-                await db.commit()
-                await db.refresh(livestream)
+                    # Save livestream to database
+                    livestream = Livestream(
+                        user_id=user_id,
+                        room_id=room_id,
+                        post_id=f"post_{user_id}",
+                        status='active'
+                    )
+                    db.add(livestream)
+                    await db.commit()
+                    await db.refresh(livestream)
 
-                print(f"📹 Livestream started: user={user_id}, room={room_id}, db_id={livestream.id}")
+                    logger.info(
+                        "Livestream started",
+                        extra={"user_id": user_id, "room_id": room_id, "livestream_id": livestream.id}
+                    )
 
-                websocket_url = f"ws://localhost:9001/room/{room_id}/host"
+                    websocket_url = f"ws://localhost:9001/room/{room_id}/host"
 
-                return StartStreamResponse(
-                    room_id=room_id,
-                    websocket_url=websocket_url
-                )
-    except aiohttp.ClientError as e:
-        raise HTTPException(status_code=503, detail=f"Cannot connect to media server: {str(e)}")
+                    return StartStreamResponse(
+                        room_id=room_id,
+                        websocket_url=websocket_url
+                    )
+            except (aiohttp.ClientConnectorError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.error(f"Cannot connect to media server: {str(e)}")
+                raise HTTPException(status_code=503, detail=f"Cannot connect to media server: {str(e)}")
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Error starting livestream: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Error starting livestream", exc_info=True, extra={"error": str(e)})
+        raise HTTPException(status_code=500, detail="Failed to start livestream")
 
 
 class StopStreamResponse(BaseModel):
@@ -165,12 +183,13 @@ async def stop_livestream(
     token = authorization.split(" ")[1]
 
     try:
-        user_id = decode_token(token)
+        payload = decode_token(token)
+        user_id = int(payload.get("sub"))
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
 
     try:
-        # Update livestream in database
+        # Get livestream from database
         result = await db.execute(
             select(Livestream).where(
                 Livestream.room_id == room_id,
@@ -179,30 +198,51 @@ async def stop_livestream(
         )
         livestream = result.scalar_one_or_none()
 
-        if livestream:
-            livestream.ended_at = datetime.utcnow()
-            livestream.status = 'ended'
-            await db.commit()
+        if not livestream:
+            raise HTTPException(status_code=404, detail="Active livestream not found")
 
-            duration = livestream.duration_seconds
-            print(f"🛑 Livestream ended: room={room_id}, duration={duration}s, max_viewers={livestream.max_viewers}")
+        # Verify ownership
+        if livestream.user_id != user_id:
+            raise HTTPException(status_code=403, detail="You can only stop your own livestreams")
 
-        # Stop room on media server
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{MEDIA_SERVER_URL}/room/{room_id}/stop",
-                headers={"Authorization": authorization}
-            ) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    raise HTTPException(status_code=resp.status, detail=f"Media server error: {text}")
+        # Update livestream in database
+        livestream.ended_at = datetime.now(timezone.utc)
+        livestream.status = 'ended'
+        await db.commit()
 
-                return StopStreamResponse(
-                    status="stopped",
-                    room_id=room_id
-                )
-    except aiohttp.ClientError as e:
-        raise HTTPException(status_code=503, detail=f"Cannot connect to media server: {str(e)}")
+        duration = livestream.duration_seconds
+        logger.info(
+            "Livestream ended",
+            extra={
+                "room_id": room_id,
+                "duration_seconds": duration,
+                "max_viewers": livestream.max_viewers
+            }
+        )
+
+        # Stop room on media server (best effort - don't fail if media server is down)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{MEDIA_SERVER_URL}/room/{room_id}/stop",
+                    headers={"Authorization": authorization},
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        logger.warning(f"Media server returned error when stopping room: {text}")
+        except (aiohttp.ClientConnectorError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+            # Log but don't fail - livestream already marked as ended in DB
+            logger.warning(f"Could not notify media server of room stop: {str(e)}")
+
+        return StopStreamResponse(
+            status="stopped",
+            room_id=room_id
+        )
+    except HTTPException:
+        await db.rollback()
+        raise
     except Exception as e:
-        print(f"Error stopping livestream: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        await db.rollback()
+        logger.error("Error stopping livestream", exc_info=True, extra={"error": str(e)})
+        raise HTTPException(status_code=500, detail="Failed to stop livestream")

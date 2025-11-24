@@ -1,15 +1,17 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 from typing import List, Dict
 import json
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 
 from db.database import create_async_session
-from db.models import Post, User, Livestream
+from db.models import Post, User, Livestream, Like
 from services.auth_service import decode_token
 
 router = APIRouter(tags=["websocket"])
+logger = logging.getLogger(__name__)
 
 
 class ConnectionManager:
@@ -110,8 +112,25 @@ async def websocket_feed(websocket: WebSocket, token: str = Query(...)):
         )
         posts_data = result.all()
 
-        initial_feed = [
-            {
+        # Build initial feed with likes data
+        initial_feed = []
+        for post, user in posts_data:
+            # Get likes count
+            likes_count_result = await db.execute(
+                select(func.count(Like.id)).where(Like.post_id == post.id)
+            )
+            likes_count = likes_count_result.scalar() or 0
+
+            # Check if current user liked this post
+            user_like_result = await db.execute(
+                select(Like).where(
+                    Like.post_id == post.id,
+                    Like.user_id == user_id
+                )
+            )
+            is_liked = user_like_result.scalar_one_or_none() is not None
+
+            initial_feed.append({
                 "id": post.id,
                 "user_id": post.user_id,
                 "username": user.username,
@@ -122,11 +141,9 @@ async def websocket_feed(websocket: WebSocket, token: str = Query(...)):
                 "media_type": post.media_type,
                 "latitude": post.latitude,
                 "longitude": post.longitude,
-                "likes_count": 0,
-                "is_liked_by_current_user": False
-            }
-            for post, user in posts_data
-        ]
+                "likes_count": likes_count,
+                "is_liked_by_current_user": is_liked
+            })
 
         await websocket.send_json({
             "type": "initial_feed",
@@ -135,21 +152,84 @@ async def websocket_feed(websocket: WebSocket, token: str = Query(...)):
 
         # Listen for messages
         while True:
-            data = await websocket.receive_json()
-            print(f"📨 WebSocket received message: {data}")
+            try:
+                data = await websocket.receive_json()
+            except json.JSONDecodeError as e:
+                logger.warning("Invalid JSON received in WebSocket", extra={"user_id": user_id, "error": str(e)})
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Invalid JSON format"
+                })
+                continue
+            except Exception as e:
+                logger.error("Error receiving WebSocket message", exc_info=True, extra={"user_id": user_id})
+                break
+
+            logger.debug("WebSocket received message", extra={"data": data, "user_id": user_id})
+
+            # Validate message structure
+            if not isinstance(data, dict):
+                logger.warning("WebSocket message is not a dictionary", extra={"user_id": user_id})
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Invalid message format: expected object"
+                })
+                continue
+
+            message_type = data.get("type")
+            if not message_type:
+                logger.warning("WebSocket message missing type field", extra={"user_id": user_id})
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Message must include 'type' field"
+                })
+                continue
 
             # Handle new post
-            if data.get("type") == "new_post":
-                content = data.get("content")
-                if content:
+            if message_type == "new_post":
+                try:
+                    content = data.get("content", "").strip()
+
+                    # Validate content
+                    if not content:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Post content cannot be empty"
+                        })
+                        continue
+
+                    # Validate content length (max 2000 chars)
+                    if len(content) > 2000:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Post content exceeds maximum length of 2000 characters"
+                        })
+                        continue
+
+                    # Validate coordinates if provided
+                    latitude = data.get("latitude")
+                    longitude = data.get("longitude")
+                    if latitude is not None and longitude is not None:
+                        try:
+                            latitude = float(latitude)
+                            longitude = float(longitude)
+                            if not (-90 <= latitude <= 90) or not (-180 <= longitude <= 180):
+                                raise ValueError("Coordinates out of range")
+                        except (TypeError, ValueError) as e:
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": "Invalid latitude/longitude values"
+                            })
+                            continue
+
                     # Create post
                     new_post = Post(
                         user_id=user_id,
                         content=content,
                         media_url=data.get("media_url"),
                         media_type=data.get("media_type"),
-                        latitude=data.get("latitude"),
-                        longitude=data.get("longitude")
+                        latitude=latitude,
+                        longitude=longitude
                     )
                     db.add(new_post)
                     await db.commit()
@@ -178,15 +258,28 @@ async def websocket_feed(websocket: WebSocket, token: str = Query(...)):
                         }
                     }
                     await manager.broadcast(post_data)
+                except Exception as e:
+                    logger.error("Error creating post via WebSocket", exc_info=True, extra={"user_id": user_id})
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Failed to create post"
+                    })
+            else:
+                # Unknown message type
+                logger.debug("Unknown WebSocket message type", extra={"user_id": user_id, "type": message_type})
+                await websocket.send_json({
+                    "type": "error",
+                    "message": f"Unknown message type: {message_type}"
+                })
 
     except WebSocketDisconnect:
         if user_id:
             manager.disconnect(websocket, user_id)
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        logger.error("WebSocket error", exc_info=True, extra={"user_id": user_id, "error": str(e)})
         if user_id:
             manager.disconnect(websocket, user_id)
-        await websocket.close(code=1011, reason=str(e))
+        await websocket.close(code=1011, reason="Internal server error")
     finally:
         if db:
             await db.close()
@@ -209,12 +302,28 @@ async def livestream_tracking_websocket(websocket: WebSocket, room_id: str):
         while True:
             try:
                 # Receive heartbeat or status messages
-                data = await websocket.receive_text()
-                message = json.loads(data)
+                data = await websocket.receive_json()
+
+                # Validate message structure
+                if not isinstance(data, dict):
+                    logger.warning("Invalid message format in livestream WebSocket", extra={"room_id": room_id})
+                    continue
 
                 # Handle viewer count updates
-                if message.get("type") == "viewer_update":
-                    viewer_count = message.get("count", 0)
+                if data.get("type") == "viewer_update":
+                    viewer_count = data.get("count")
+
+                    if viewer_count is None:
+                        logger.warning("Viewer update missing count field", extra={"room_id": room_id})
+                        continue
+
+                    try:
+                        viewer_count = int(viewer_count)
+                        if viewer_count < 0:
+                            raise ValueError("Viewer count cannot be negative")
+                    except (TypeError, ValueError) as e:
+                        logger.warning("Invalid viewer count value", extra={"room_id": room_id, "count": viewer_count})
+                        continue
 
                     result = await db.execute(
                         select(Livestream).where(
@@ -231,11 +340,16 @@ async def livestream_tracking_websocket(websocket: WebSocket, room_id: str):
 
             except WebSocketDisconnect:
                 break
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                logger.warning("Invalid JSON received in livestream WebSocket", extra={"room_id": room_id, "error": str(e)})
+                continue
+            except Exception as e:
+                logger.error("Error handling livestream WebSocket message", exc_info=True, extra={"room_id": room_id})
+                # Don't break - keep connection alive
                 continue
 
     except Exception as e:
-        print(f"WebSocket error for room {room_id}: {e}")
+        logger.error("WebSocket error for livestream room", exc_info=True, extra={"room_id": room_id, "error": str(e)})
 
     finally:
         # Connection dropped - end the livestream
@@ -249,14 +363,17 @@ async def livestream_tracking_websocket(websocket: WebSocket, room_id: str):
             livestream = result.scalar_one_or_none()
 
             if livestream:
-                livestream.ended_at = datetime.utcnow()
+                livestream.ended_at = datetime.now(timezone.utc)
                 livestream.status = 'ended'
                 await db.commit()
 
                 duration = livestream.duration_seconds
-                print(f"🔌 WebSocket disconnected - Livestream ended: room={room_id}, duration={duration}s")
+                logger.info(
+                    "WebSocket disconnected - Livestream ended",
+                    extra={"room_id": room_id, "duration_seconds": duration}
+                )
 
         except Exception as e:
-            print(f"Error ending livestream on disconnect: {e}")
+            logger.error("Error ending livestream on disconnect", exc_info=True, extra={"room_id": room_id, "error": str(e)})
         finally:
             await db.close()

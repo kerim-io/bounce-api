@@ -6,6 +6,7 @@ from typing import Optional, List
 from datetime import datetime
 import uuid
 from pathlib import Path
+import aiofiles
 
 from db.database import get_async_session
 from db.models import Post, User, Like
@@ -21,29 +22,78 @@ async def upload_image(
     current_user: User = Depends(get_current_user)
 ):
     """Upload an image and return the URL"""
-    # Validate file type
-    if not file.content_type or not file.content_type.startswith("image/"):
+    # Allowed image extensions and MIME types
+    ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif"}
+    ALLOWED_MIME_TYPES = {
+        "image/jpeg", "image/png", "image/gif", "image/webp",
+        "image/heic", "image/heif"
+    }
+
+    # Validate file type by MIME type
+    if not file.content_type or file.content_type not in ALLOWED_MIME_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only image files are allowed"
+            detail=f"Invalid file type. Allowed types: {', '.join(ALLOWED_MIME_TYPES)}"
+        )
+
+    # Validate file extension
+    if not file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Filename is required"
+        )
+
+    file_extension = Path(file.filename).suffix.lower()
+    if file_extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file extension. Allowed extensions: {', '.join(ALLOWED_EXTENSIONS)}"
         )
 
     # Validate file size (10MB max)
-    contents = await file.read()
+    try:
+        contents = await file.read()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to read uploaded file"
+        )
+
+    if len(contents) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file is empty"
+        )
+
     if len(contents) > settings.MAX_FILE_SIZE:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"File size exceeds maximum allowed size of {settings.MAX_FILE_SIZE} bytes"
+            detail=f"File size exceeds maximum allowed size of {settings.MAX_FILE_SIZE // (1024 * 1024)}MB"
         )
 
     # Generate unique filename
-    file_extension = Path(file.filename).suffix if file.filename else ".jpg"
     unique_filename = f"{uuid.uuid4()}{file_extension}"
 
-    # Save file
-    upload_path = Path(settings.UPLOAD_DIR) / unique_filename
-    with open(upload_path, "wb") as f:
-        f.write(contents)
+    # Ensure upload directory exists
+    upload_dir = Path(settings.UPLOAD_DIR)
+    try:
+        upload_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create upload directory"
+        )
+
+    # Save file asynchronously
+    upload_path = upload_dir / unique_filename
+    try:
+        async with aiofiles.open(upload_path, "wb") as f:
+            await f.write(contents)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save uploaded file"
+        )
 
     # Return URL
     file_url = f"/files/{unique_filename}"
@@ -92,30 +142,65 @@ async def create_post(
     db: AsyncSession = Depends(get_async_session)
 ):
     """Create a new post (text only for MVP)"""
-    post = Post(
-        user_id=current_user.id,
-        content=post_data.content,
-        media_url=post_data.media_url,
-        media_type=post_data.media_type,
-        latitude=post_data.latitude,
-        longitude=post_data.longitude
-    )
-    db.add(post)
-    await db.commit()
-    await db.refresh(post)
+    # Validate content
+    content = post_data.content.strip()
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Post content cannot be empty"
+        )
 
-    return PostResponse(
-        id=post.id,
-        user_id=post.user_id,
-        username=current_user.username,
-        content=post.content,
-        timestamp=post.created_at,
-        profile_pic_url=current_user.profile_picture,
-        media_url=post.media_url,
-        media_type=post.media_type,
-        latitude=post.latitude,
-        longitude=post.longitude
-    )
+    # Validate content length (max 2000 chars)
+    if len(content) > 2000:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Post content exceeds maximum length of 2000 characters"
+        )
+
+    # Validate coordinates if provided
+    if post_data.latitude is not None and post_data.longitude is not None:
+        if not (-90 <= post_data.latitude <= 90):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Latitude must be between -90 and 90"
+            )
+        if not (-180 <= post_data.longitude <= 180):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Longitude must be between -180 and 180"
+            )
+
+    try:
+        post = Post(
+            user_id=current_user.id,
+            content=content,
+            media_url=post_data.media_url,
+            media_type=post_data.media_type,
+            latitude=post_data.latitude,
+            longitude=post_data.longitude
+        )
+        db.add(post)
+        await db.commit()
+        await db.refresh(post)
+
+        return PostResponse(
+            id=post.id,
+            user_id=post.user_id,
+            username=current_user.username,
+            content=post.content,
+            timestamp=post.created_at,
+            profile_pic_url=current_user.profile_picture,
+            media_url=post.media_url,
+            media_type=post.media_type,
+            latitude=post.latitude,
+            longitude=post.longitude
+        )
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create post"
+        )
 
 
 @router.get("/feed", response_model=List[PostResponse])
@@ -125,33 +210,27 @@ async def get_feed(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session)
 ):
-    """Get feed of posts with likes"""
-    result = await db.execute(
-        select(Post, User)
+    """Get feed of posts with likes (optimized single query)"""
+    from sqlalchemy import case
+
+    # Optimized single query with aggregations and conditional logic
+    stmt = (
+        select(
+            Post,
+            User,
+            func.count(Like.id).label('likes_count'),
+            func.max(case((Like.user_id == current_user.id, 1), else_=0)).label('is_liked')
+        )
         .join(User, Post.user_id == User.id)
+        .outerjoin(Like, Post.id == Like.post_id)
+        .group_by(Post.id, User.id)
         .order_by(desc(Post.created_at))
         .limit(limit)
         .offset(offset)
     )
 
-    posts_data = result.all()
-
-    # Get likes for all posts in one query
-    post_ids = [post.id for post, _ in posts_data]
-    likes_result = await db.execute(
-        select(Like.post_id, func.count(Like.id).label('count'))
-        .where(Like.post_id.in_(post_ids))
-        .group_by(Like.post_id)
-    )
-    likes_counts = dict(likes_result.all())
-
-    # Get current user's likes
-    user_likes_result = await db.execute(
-        select(Like.post_id)
-        .where(Like.user_id == current_user.id)
-        .where(Like.post_id.in_(post_ids))
-    )
-    user_liked_posts = set(row[0] for row in user_likes_result.all())
+    result = await db.execute(stmt)
+    rows = result.all()
 
     return [
         PostResponse(
@@ -165,10 +244,10 @@ async def get_feed(
             media_type=post.media_type,
             latitude=post.latitude,
             longitude=post.longitude,
-            likes_count=likes_counts.get(post.id, 0),
-            is_liked_by_current_user=(post.id in user_liked_posts)
+            likes_count=likes_count or 0,
+            is_liked_by_current_user=bool(is_liked)
         )
-        for post, user in posts_data
+        for post, user, likes_count, is_liked in rows
     ]
 
 
@@ -179,10 +258,26 @@ async def get_posts_by_time(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session)
 ):
-    """Get posts by specific date/hour for timeline scrubbing"""
+    """Get posts by specific date/hour for timeline scrubbing (optimized single query)"""
     from datetime import datetime, timedelta
+    from sqlalchemy import case
 
-    target_date = datetime.fromisoformat(date)
+    # Validate date format
+    try:
+        target_date = datetime.fromisoformat(date)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid date format. Expected YYYY-MM-DD"
+        )
+
+    # Validate hour if provided
+    if hour is not None:
+        if not isinstance(hour, int) or not (0 <= hour <= 23):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Hour must be an integer between 0 and 23"
+            )
 
     if hour is not None:
         start_time = target_date.replace(hour=hour, minute=0, second=0)
@@ -191,32 +286,24 @@ async def get_posts_by_time(
         start_time = target_date.replace(hour=0, minute=0, second=0)
         end_time = start_time + timedelta(days=1)
 
-    result = await db.execute(
-        select(Post, User)
+    # Optimized single query with aggregations
+    stmt = (
+        select(
+            Post,
+            User,
+            func.count(Like.id).label('likes_count'),
+            func.max(case((Like.user_id == current_user.id, 1), else_=0)).label('is_liked')
+        )
         .join(User, Post.user_id == User.id)
+        .outerjoin(Like, Post.id == Like.post_id)
         .where(Post.created_at >= start_time)
         .where(Post.created_at < end_time)
+        .group_by(Post.id, User.id)
         .order_by(desc(Post.created_at))
     )
 
-    posts_data = result.all()
-
-    # Get likes for all posts
-    post_ids = [post.id for post, _ in posts_data]
-    likes_result = await db.execute(
-        select(Like.post_id, func.count(Like.id).label('count'))
-        .where(Like.post_id.in_(post_ids))
-        .group_by(Like.post_id)
-    )
-    likes_counts = dict(likes_result.all())
-
-    # Get current user's likes
-    user_likes_result = await db.execute(
-        select(Like.post_id)
-        .where(Like.user_id == current_user.id)
-        .where(Like.post_id.in_(post_ids))
-    )
-    user_liked_posts = set(row[0] for row in user_likes_result.all())
+    result = await db.execute(stmt)
+    rows = result.all()
 
     return [
         PostResponse(
@@ -230,8 +317,8 @@ async def get_posts_by_time(
             media_type=post.media_type,
             latitude=post.latitude,
             longitude=post.longitude,
-            likes_count=likes_counts.get(post.id, 0),
-            is_liked_by_current_user=(post.id in user_liked_posts)
+            likes_count=likes_count or 0,
+            is_liked_by_current_user=bool(is_liked)
         )
-        for post, user in posts_data
+        for post, user, likes_count, is_liked in rows
     ]
