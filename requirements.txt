@@ -1,3 +1,4 @@
+# Python 3.13 compatible
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 sqlalchemy==2.0.23
