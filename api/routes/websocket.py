@@ -192,17 +192,18 @@ async def websocket_feed(websocket: WebSocket, token: str = Query(...)):
             if message_type == "new_post":
                 try:
                     content = data.get("content", "").strip()
+                    media_url = data.get("media_url")
 
-                    # Validate content
-                    if not content:
+                    # Validate content - allow empty if media is present
+                    if not content and not media_url:
                         await websocket.send_json({
                             "type": "error",
-                            "message": "Post content cannot be empty"
+                            "message": "Post must have content or media"
                         })
                         continue
 
                     # Validate content length (max 2000 chars)
-                    if len(content) > 2000:
+                    if content and len(content) > 2000:
                         await websocket.send_json({
                             "type": "error",
                             "message": "Post content exceeds maximum length of 2000 characters"
