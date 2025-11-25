@@ -6,7 +6,7 @@ from pathlib import Path
 import logging
 
 from db.database import create_db_and_tables
-from api.routes import auth, posts, users, checkins, websocket, likes, geocoding, locations, livestream
+from api.routes import auth, posts, users, checkins, websocket, likes, geocoding, locations, livestream, bounces
 from core.config import settings
 
 # Configure logging
@@ -63,6 +63,7 @@ app.include_router(likes.router)
 app.include_router(geocoding.router)
 app.include_router(locations.router)
 app.include_router(livestream.router)
+app.include_router(bounces.router)
 
 
 @app.get("/")

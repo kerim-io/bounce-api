@@ -48,6 +48,8 @@ class User(Base):
     livestreams = relationship("Livestream", back_populates="user", cascade="all, delete-orphan")
     followers = relationship("Follow", foreign_keys="Follow.following_id", back_populates="following", cascade="all, delete-orphan")
     following = relationship("Follow", foreign_keys="Follow.follower_id", back_populates="follower", cascade="all, delete-orphan")
+    bounces_created = relationship("Bounce", back_populates="creator", cascade="all, delete-orphan")
+    bounce_invites = relationship("BounceInvite", back_populates="user", cascade="all, delete-orphan")
 
     @property
     def has_profile(self) -> bool:
@@ -165,3 +167,48 @@ class Livestream(Base):
         if self.ended_at:
             return int((self.ended_at - self.started_at).total_seconds())
         return None
+
+
+class Bounce(Base):
+    """A location-based event/meetup invitation - 'this is where the party's at'"""
+    __tablename__ = "bounces"
+
+    id = Column(Integer, primary_key=True, index=True)
+    creator_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # Location
+    venue_name = Column(String(255), nullable=False)
+    venue_address = Column(String(500), nullable=True)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+
+    # Timing
+    bounce_time = Column(DateTime(timezone=True), nullable=False)
+    is_now = Column(Boolean, default=False, nullable=False)
+
+    # Visibility
+    is_public = Column(Boolean, default=False, nullable=False)
+
+    # Status: 'active', 'archived'
+    status = Column(String(20), default='active', nullable=False, index=True)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    # Relationships
+    creator = relationship("User", back_populates="bounces_created")
+    invites = relationship("BounceInvite", back_populates="bounce", cascade="all, delete-orphan")
+
+
+class BounceInvite(Base):
+    """Invitation to a bounce for a specific user"""
+    __tablename__ = "bounce_invites"
+
+    id = Column(Integer, primary_key=True, index=True)
+    bounce_id = Column(Integer, ForeignKey("bounces.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    bounce = relationship("Bounce", back_populates="invites")
+    user = relationship("User", back_populates="bounce_invites")

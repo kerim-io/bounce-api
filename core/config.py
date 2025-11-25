@@ -28,6 +28,10 @@ class Settings:
     BASEL_LON: float = float(os.getenv("BASEL_LON", "-80.1300"))
     BASEL_RADIUS_KM: float = float(os.getenv("BASEL_RADIUS_KM", "5"))
 
+    # Activity Clustering (for map hotspots)
+    ACTIVITY_CLUSTER_RADIUS_M: float = float(os.getenv("ACTIVITY_CLUSTER_RADIUS_M", "100"))  # meters
+    ACTIVITY_TIME_WINDOW_MIN: int = int(os.getenv("ACTIVITY_TIME_WINDOW_MIN", "60"))  # minutes
+
     # QR Code
     QR_SECRET_SALT: str = os.getenv("QR_SECRET_SALT", "change-this-qr-salt-in-production")
 

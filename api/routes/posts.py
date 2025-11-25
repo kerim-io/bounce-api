@@ -13,6 +13,8 @@ from db.database import get_async_session
 from db.models import Post, User, Like
 from api.dependencies import get_current_user
 from core.config import settings
+from services.activity_clustering import get_activity_clusters
+from api.routes.websocket import broadcast_activity_clusters
 
 router = APIRouter(prefix="/posts", tags=["posts"])
 logger = logging.getLogger(__name__)
@@ -216,6 +218,25 @@ async def create_post(
                 "content_length": len(content) if content else 0
             }
         )
+
+        # Broadcast updated activity clusters if post has location
+        if post.latitude is not None and post.longitude is not None:
+            try:
+                clusters = await get_activity_clusters(db)
+                cluster_data = [
+                    {
+                        "cluster_id": c.cluster_id,
+                        "latitude": c.latitude,
+                        "longitude": c.longitude,
+                        "count": c.count,
+                        "venue_name": c.venue_name,
+                        "last_activity": c.last_activity.isoformat()
+                    }
+                    for c in clusters
+                ]
+                await broadcast_activity_clusters(cluster_data)
+            except Exception as cluster_err:
+                logger.warning("Failed to broadcast activity clusters", extra={"error": str(cluster_err)})
 
         return PostResponse(
             id=post.id,

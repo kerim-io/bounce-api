@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from db.database import create_async_session
 from db.models import Post, User, Livestream, Like
 from services.auth_service import decode_token
+from services.activity_clustering import get_activity_clusters
 
 router = APIRouter(tags=["websocket"])
 logger = logging.getLogger(__name__)
@@ -73,6 +74,20 @@ async def broadcast_location_expired(location_id: str):
     await manager.broadcast({
         "type": "location_expired",
         "location_id": location_id,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+
+
+async def broadcast_activity_clusters(clusters: list):
+    """
+    Broadcast updated activity clusters to all connected clients.
+
+    Called when a new post with location is created, to update map hotspots.
+    Clusters show anonymized counts like "3 people here".
+    """
+    await manager.broadcast({
+        "type": "activity_clusters",
+        "clusters": clusters,
         "timestamp": datetime.utcnow().isoformat()
     })
 
@@ -267,6 +282,25 @@ async def websocket_feed(websocket: WebSocket, token: str = Query(...)):
                         }
                     }
                     await manager.broadcast(post_data)
+
+                    # Broadcast updated activity clusters if post has location
+                    if new_post.latitude is not None and new_post.longitude is not None:
+                        try:
+                            clusters = await get_activity_clusters(db)
+                            cluster_data = [
+                                {
+                                    "cluster_id": c.cluster_id,
+                                    "latitude": c.latitude,
+                                    "longitude": c.longitude,
+                                    "count": c.count,
+                                    "venue_name": c.venue_name,
+                                    "last_activity": c.last_activity.isoformat()
+                                }
+                                for c in clusters
+                            ]
+                            await broadcast_activity_clusters(cluster_data)
+                        except Exception as cluster_err:
+                            logger.warning("Failed to broadcast activity clusters", extra={"error": str(cluster_err)})
                 except Exception as e:
                     logger.error("Error creating post via WebSocket", exc_info=True, extra={"user_id": user_id})
                     await websocket.send_json({
