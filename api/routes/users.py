@@ -84,6 +84,28 @@ class SimpleUserResponse(BaseModel):
         from_attributes = True
 
 
+class PublicProfileResponse(BaseModel):
+    """Public profile response with stats for viewing other users"""
+    id: int
+    first_name: Optional[str]
+    last_name: Optional[str]
+    nickname: Optional[str]
+    employer: Optional[str]
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    profile_picture: Optional[str]
+    has_profile: bool
+    # Stats
+    posts_count: int
+    followers_count: int
+    following_count: int
+    # Follow state for current user
+    is_followed_by_current_user: bool
+
+    class Config:
+        from_attributes = True
+
+
 class LocationUpdate(BaseModel):
     """Update user location for Art Basel Miami geofence check"""
     latitude: float
@@ -334,18 +356,131 @@ async def get_followers(
     return users
 
 
-@router.get("/{user_id}/profile", response_model=ProfileResponse)
+@router.get("/{user_id}/following", response_model=List[SimpleUserResponse])
+async def get_user_following(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Get list of users that a specific user is following"""
+    # Verify user exists
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    result = await db.execute(
+        select(User).join(
+            Follow, Follow.following_id == User.id
+        ).where(Follow.follower_id == user_id)
+    )
+    users = result.scalars().all()
+    return [
+        SimpleUserResponse(
+            id=u.id,
+            nickname=u.nickname,
+            first_name=u.first_name,
+            last_name=u.last_name,
+            profile_picture=u.profile_picture,
+            employer=u.employer
+        )
+        for u in users
+    ]
+
+
+@router.get("/{user_id}/followers", response_model=List[SimpleUserResponse])
+async def get_user_followers(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Get list of users following a specific user"""
+    # Verify user exists
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    result = await db.execute(
+        select(User).join(
+            Follow, Follow.follower_id == User.id
+        ).where(Follow.following_id == user_id)
+    )
+    users = result.scalars().all()
+    return [
+        SimpleUserResponse(
+            id=u.id,
+            nickname=u.nickname,
+            first_name=u.first_name,
+            last_name=u.last_name,
+            profile_picture=u.profile_picture,
+            employer=u.employer
+        )
+        for u in users
+    ]
+
+
+@router.get("/search", response_model=List[SimpleUserResponse])
+async def search_users(
+    q: str,
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Search for users by name or nickname.
+
+    Searches across nickname, first_name, and last_name fields.
+    Returns up to `limit` results (default 20).
+    """
+    if not q or len(q.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Search query must be at least 2 characters")
+
+    search_term = f"%{q.strip().lower()}%"
+
+    from sqlalchemy import or_, func as sql_func
+
+    result = await db.execute(
+        select(User)
+        .where(
+            or_(
+                sql_func.lower(User.nickname).like(search_term),
+                sql_func.lower(User.first_name).like(search_term),
+                sql_func.lower(User.last_name).like(search_term),
+                sql_func.lower(User.username).like(search_term)
+            )
+        )
+        .limit(limit)
+    )
+    users = result.scalars().all()
+
+    return [
+        SimpleUserResponse(
+            id=user.id,
+            nickname=user.nickname,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            profile_picture=user.profile_picture,
+            employer=user.employer
+        )
+        for user in users
+    ]
+
+
+@router.get("/{user_id}/profile", response_model=PublicProfileResponse)
 async def get_user_profile(
     user_id: int,
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Get another user's profile with privacy controls.
+    Get another user's profile with privacy controls and stats.
 
     Phone/email only visible if:
     - User has made them visible (phone_visible/email_visible = True) AND
     - Requesting user is geolocated at Art Basel Miami (can_post = True)
+
+    Returns posts count, followers count, following count, and follow state.
     """
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -353,10 +488,37 @@ async def get_user_profile(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Get posts count
+    posts_result = await db.execute(
+        select(func.count(Post.id)).where(Post.user_id == user_id)
+    )
+    posts_count = posts_result.scalar() or 0
+
+    # Get followers count (users following this user)
+    followers_result = await db.execute(
+        select(func.count(Follow.id)).where(Follow.following_id == user_id)
+    )
+    followers_count = followers_result.scalar() or 0
+
+    # Get following count (users this user follows)
+    following_result = await db.execute(
+        select(func.count(Follow.id)).where(Follow.follower_id == user_id)
+    )
+    following_count = following_result.scalar() or 0
+
+    # Check if current user follows this user
+    follow_check = await db.execute(
+        select(Follow).where(
+            Follow.follower_id == current_user.id,
+            Follow.following_id == user_id
+        )
+    )
+    is_followed = follow_check.scalar_one_or_none() is not None
+
     # Conditional privacy: only show phone/email to geolocated users
     can_see_private = current_user.can_post  # Geolocated at Art Basel Miami
 
-    return ProfileResponse(
+    return PublicProfileResponse(
         id=user.id,
         first_name=user.first_name,
         last_name=user.last_name,
@@ -366,8 +528,10 @@ async def get_user_profile(
         email=user.email if (user.email_visible and can_see_private) else None,
         profile_picture=user.profile_picture,
         has_profile=user.has_profile,
-        phone_visible=None,  # Privacy flags not shown to others
-        email_visible=None
+        posts_count=posts_count,
+        followers_count=followers_count,
+        following_count=following_count,
+        is_followed_by_current_user=is_followed
     )
 
 

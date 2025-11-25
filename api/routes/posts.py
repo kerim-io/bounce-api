@@ -122,6 +122,8 @@ class PostCreate(BaseModel):
     media_type: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    venue_name: Optional[str] = None
+    venue_id: Optional[str] = None
 
 
 class PostResponse(BaseModel):
@@ -135,6 +137,8 @@ class PostResponse(BaseModel):
     media_type: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    venue_name: Optional[str] = None
+    venue_id: Optional[str] = None
     likes_count: int = 0
     is_liked_by_current_user: bool = False
 
@@ -191,7 +195,9 @@ async def create_post(
             media_url=post_data.media_url,
             media_type=post_data.media_type,
             latitude=post_data.latitude,
-            longitude=post_data.longitude
+            longitude=post_data.longitude,
+            venue_name=post_data.venue_name,
+            venue_id=post_data.venue_id
         )
         db.add(post)
         await db.commit()
@@ -205,6 +211,8 @@ async def create_post(
                 "has_media": bool(post.media_url),
                 "media_type": post.media_type,
                 "has_location": bool(post.latitude and post.longitude),
+                "has_venue": bool(post.venue_name),
+                "venue_name": post.venue_name,
                 "content_length": len(content) if content else 0
             }
         )
@@ -212,14 +220,16 @@ async def create_post(
         return PostResponse(
             id=post.id,
             user_id=post.user_id,
-            username=current_user.username,
+            username=current_user.nickname,
             content=post.content,
             timestamp=post.created_at,
             profile_pic_url=current_user.profile_picture,
             media_url=post.media_url,
             media_type=post.media_type,
             latitude=post.latitude,
-            longitude=post.longitude
+            longitude=post.longitude,
+            venue_name=post.venue_name,
+            venue_id=post.venue_id
         )
     except Exception as e:
         await db.rollback()
@@ -262,7 +272,7 @@ async def get_feed(
         PostResponse(
             id=post.id,
             user_id=post.user_id,
-            username=user.username,
+            username=user.nickname,
             content=post.content,
             timestamp=post.created_at,
             profile_pic_url=user.profile_picture,
@@ -270,6 +280,8 @@ async def get_feed(
             media_type=post.media_type,
             latitude=post.latitude,
             longitude=post.longitude,
+            venue_name=post.venue_name,
+            venue_id=post.venue_id,
             likes_count=likes_count or 0,
             is_liked_by_current_user=bool(is_liked)
         )
@@ -335,7 +347,7 @@ async def get_posts_by_time(
         PostResponse(
             id=post.id,
             user_id=post.user_id,
-            username=user.username,
+            username=user.nickname,
             content=post.content,
             timestamp=post.created_at,
             profile_pic_url=user.profile_picture,
@@ -343,6 +355,8 @@ async def get_posts_by_time(
             media_type=post.media_type,
             latitude=post.latitude,
             longitude=post.longitude,
+            venue_name=post.venue_name,
+            venue_id=post.venue_id,
             likes_count=likes_count or 0,
             is_liked_by_current_user=bool(is_liked)
         )

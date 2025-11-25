@@ -78,6 +78,8 @@ class Post(Base):
     media_type = Column(String(10), nullable=True)  # 'image', 'video', None for text
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
+    venue_name = Column(String(255), nullable=True)  # Venue name from MapKit (e.g., "Hooters Miami")
+    venue_id = Column(String(255), nullable=True)  # Venue identifier (typically lat,lon)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     # Relationships

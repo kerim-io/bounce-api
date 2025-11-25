@@ -128,7 +128,7 @@ async def websocket_feed(websocket: WebSocket, token: str = Query(...)):
             initial_feed.append({
                 "id": post.id,
                 "user_id": post.user_id,
-                "username": user.username,
+                "username": user.nickname,
                 "content": post.content,
                 "timestamp": post.created_at.isoformat(),
                 "profile_pic_url": user.profile_picture,
@@ -136,6 +136,8 @@ async def websocket_feed(websocket: WebSocket, token: str = Query(...)):
                 "media_type": post.media_type,
                 "latitude": post.latitude,
                 "longitude": post.longitude,
+                "venue_name": post.venue_name,
+                "venue_id": post.venue_id,
                 "likes_count": likes_count or 0,
                 "is_liked_by_current_user": bool(is_liked)
             })
@@ -221,6 +223,10 @@ async def websocket_feed(websocket: WebSocket, token: str = Query(...)):
                             })
                             continue
 
+                    # Extract venue fields
+                    venue_name = data.get("venue_name")
+                    venue_id = data.get("venue_id")
+
                     # Create post
                     new_post = Post(
                         user_id=user_id,
@@ -228,7 +234,9 @@ async def websocket_feed(websocket: WebSocket, token: str = Query(...)):
                         media_url=data.get("media_url"),
                         media_type=data.get("media_type"),
                         latitude=latitude,
-                        longitude=longitude
+                        longitude=longitude,
+                        venue_name=venue_name,
+                        venue_id=venue_id
                     )
                     db.add(new_post)
                     await db.commit()
@@ -244,7 +252,7 @@ async def websocket_feed(websocket: WebSocket, token: str = Query(...)):
                         "post": {
                             "id": new_post.id,
                             "user_id": new_post.user_id,
-                            "username": post_user.username,
+                            "username": post_user.nickname,
                             "content": new_post.content,
                             "timestamp": new_post.created_at.isoformat(),
                             "profile_pic_url": post_user.profile_picture,
@@ -252,6 +260,8 @@ async def websocket_feed(websocket: WebSocket, token: str = Query(...)):
                             "media_type": new_post.media_type,
                             "latitude": new_post.latitude,
                             "longitude": new_post.longitude,
+                            "venue_name": new_post.venue_name,
+                            "venue_id": new_post.venue_id,
                             "likes_count": 0,
                             "is_liked_by_current_user": False
                         }
