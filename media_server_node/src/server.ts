@@ -33,6 +33,10 @@ class MediaServer {
     console.log(`Loading configuration from: ${configPath}`);
     this.config.load(configPath);
 
+    // Validate configuration for production environment
+    // This will throw an error if ANNOUNCED_IP is not set in production
+    this.config.validateForProduction();
+
     const serverConfig = this.config.get();
 
     console.log('');

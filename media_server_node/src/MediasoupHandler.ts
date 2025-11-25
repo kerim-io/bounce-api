@@ -113,19 +113,20 @@ export class MediasoupHandler {
       initialAvailableOutgoingBitrate: this.config.video.target_bitrate_kbps * 1000
     };
 
-    // Get announced IP from environment variable (critical for production)
-    const announcedIp = process.env.ANNOUNCED_IP || undefined;
+    // Get announced IP from config (centralized configuration)
+    const announcedIp = this.config.server.announced_ip;
 
-    if (!announcedIp) {
-      console.warn('⚠️  ANNOUNCED_IP not set! WebRTC may not work in production.');
-      console.warn('   Set ANNOUNCED_IP to your server\'s public IP address.');
+    // Only warn in development - production enforcement happens in config.validateForProduction()
+    if (!announcedIp && process.env.NODE_ENV !== 'production') {
+      console.warn('⚠️  ANNOUNCED_IP not set. WebRTC will only work locally.');
+      console.warn('   For production, set ANNOUNCED_IP to your server\'s public IP address.');
     }
 
     const transport = await router.createWebRtcTransport({
       listenIps: [
         {
           ip: '0.0.0.0',
-          announcedIp: announcedIp // Use external IP in production, undefined for local
+          announcedIp: announcedIp  // Public IP for production, undefined for local dev
         }
       ],
       enableUdp: true,

@@ -8,6 +8,7 @@ import { IncomingMessage } from 'http';
 import { parse as parseUrl } from 'url';
 import RoomManager from './RoomManager';
 import MediasoupHandler from './MediasoupHandler';
+import Config from './config';
 import { WebSocketMessage } from './types';
 import { types as mediasoupTypes } from 'mediasoup';
 
@@ -87,16 +88,20 @@ export class WSServer {
 
         console.log(`✓ WebSocket connected: ${peerId} (${role}) in room ${roomId}`);
 
-        // Send welcome message with router RTP capabilities
+        // Send welcome message with router RTP capabilities and ICE servers
         const room = this.roomManager.getRoom(roomId);
         if (room && room.router) {
+          // Get ICE servers (includes TURN if configured)
+          const iceServers = Config.getInstance().getIceServersForClient();
+
           this.sendMessage(ws, {
             type: 'join',
             peer_id: peerId,
             room_id: roomId,
             data: {
               role,
-              rtpCapabilities: room.router.rtpCapabilities
+              rtpCapabilities: room.router.rtpCapabilities,
+              iceServers  // Client needs this for RTCPeerConnection configuration
             }
           });
         }

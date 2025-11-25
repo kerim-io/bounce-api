@@ -9,6 +9,7 @@ export interface ServerConfig {
     port: number;
     websocket_port: number;
     max_connections: number;
+    announced_ip?: string;  // Public IP for WebRTC (required in production)
   };
   webrtc: {
     ice_servers: Array<{

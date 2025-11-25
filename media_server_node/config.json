@@ -9,6 +9,13 @@
     "ice_servers": [
       {
         "urls": ["stun:stun.l.google.com:19302"]
+      },
+      {
+        "_comment": "TURN server for NAT traversal (enable in production)",
+        "_enable": false,
+        "urls": ["turn:turn.example.com:3478", "turns:turn.example.com:5349"],
+        "username": "your-username",
+        "credential": "your-credential"
       }
     ],
     "enable_dtls": true,
