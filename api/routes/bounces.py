@@ -9,6 +9,7 @@ import logging
 from db.database import get_async_session
 from db.models import Bounce, BounceInvite, User
 from api.dependencies import get_current_user
+from services.geofence import haversine_distance
 
 router = APIRouter(prefix="/bounces", tags=["bounces"])
 logger = logging.getLogger(__name__)
@@ -184,6 +185,162 @@ async def get_bounces(
         )
         for bounce, user, invite_count in rows
     ]
+
+
+@router.get("/mine", response_model=List[BounceResponse])
+async def get_my_bounces(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Get bounces created by the current user"""
+    invite_count_subq = (
+        select(func.count(BounceInvite.id))
+        .where(BounceInvite.bounce_id == Bounce.id)
+        .correlate(Bounce)
+        .scalar_subquery()
+    )
+
+    stmt = (
+        select(Bounce, User, invite_count_subq.label('invite_count'))
+        .join(User, Bounce.creator_id == User.id)
+        .where(Bounce.creator_id == current_user.id)
+        .order_by(desc(Bounce.bounce_time))
+    )
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    return [
+        BounceResponse(
+            id=bounce.id,
+            creator_id=bounce.creator_id,
+            creator_nickname=user.nickname,
+            creator_profile_pic=user.profile_picture,
+            venue_name=bounce.venue_name,
+            venue_address=bounce.venue_address,
+            latitude=bounce.latitude,
+            longitude=bounce.longitude,
+            bounce_time=bounce.bounce_time,
+            is_now=bounce.is_now,
+            is_public=bounce.is_public,
+            status=bounce.status,
+            invite_count=invite_count or 0,
+            created_at=bounce.created_at
+        )
+        for bounce, user, invite_count in rows
+    ]
+
+
+@router.get("/invited", response_model=List[BounceResponse])
+async def get_invited_bounces(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Get bounces the current user is invited to"""
+    invite_count_subq = (
+        select(func.count(BounceInvite.id))
+        .where(BounceInvite.bounce_id == Bounce.id)
+        .correlate(Bounce)
+        .scalar_subquery()
+    )
+
+    # Get bounces where user is invited
+    stmt = (
+        select(Bounce, User, invite_count_subq.label('invite_count'))
+        .join(User, Bounce.creator_id == User.id)
+        .join(BounceInvite, Bounce.id == BounceInvite.bounce_id)
+        .where(BounceInvite.user_id == current_user.id)
+        .where(Bounce.status == 'active')
+        .order_by(Bounce.bounce_time.asc())
+    )
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    return [
+        BounceResponse(
+            id=bounce.id,
+            creator_id=bounce.creator_id,
+            creator_nickname=user.nickname,
+            creator_profile_pic=user.profile_picture,
+            venue_name=bounce.venue_name,
+            venue_address=bounce.venue_address,
+            latitude=bounce.latitude,
+            longitude=bounce.longitude,
+            bounce_time=bounce.bounce_time,
+            is_now=bounce.is_now,
+            is_public=bounce.is_public,
+            status=bounce.status,
+            invite_count=invite_count or 0,
+            created_at=bounce.created_at
+        )
+        for bounce, user, invite_count in rows
+    ]
+
+
+@router.get("/public", response_model=List[BounceResponse])
+async def get_public_bounces(
+    lat: float,
+    lng: float,
+    radius: float = 10.0,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Get nearby public bounces.
+
+    Args:
+        lat: User's latitude
+        lng: User's longitude
+        radius: Search radius in km (default 10km)
+    """
+    now = datetime.now(timezone.utc)
+
+    invite_count_subq = (
+        select(func.count(BounceInvite.id))
+        .where(BounceInvite.bounce_id == Bounce.id)
+        .correlate(Bounce)
+        .scalar_subquery()
+    )
+
+    # Get all public active future bounces
+    stmt = (
+        select(Bounce, User, invite_count_subq.label('invite_count'))
+        .join(User, Bounce.creator_id == User.id)
+        .where(Bounce.is_public == True)
+        .where(Bounce.status == 'active')
+        .where(Bounce.bounce_time >= now)
+        .order_by(Bounce.bounce_time.asc())
+    )
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    # Filter by distance using haversine
+    nearby_bounces = []
+    for bounce, user, invite_count in rows:
+        distance = haversine_distance(lat, lng, bounce.latitude, bounce.longitude)
+        if distance <= radius:
+            nearby_bounces.append(
+                BounceResponse(
+                    id=bounce.id,
+                    creator_id=bounce.creator_id,
+                    creator_nickname=user.nickname,
+                    creator_profile_pic=user.profile_picture,
+                    venue_name=bounce.venue_name,
+                    venue_address=bounce.venue_address,
+                    latitude=bounce.latitude,
+                    longitude=bounce.longitude,
+                    bounce_time=bounce.bounce_time,
+                    is_now=bounce.is_now,
+                    is_public=bounce.is_public,
+                    status=bounce.status,
+                    invite_count=invite_count or 0,
+                    created_at=bounce.created_at
+                )
+            )
+
+    return nearby_bounces
 
 
 @router.get("/{bounce_id}", response_model=BounceResponse)
