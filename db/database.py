@@ -48,9 +48,13 @@ async def run_migrations():
     from sqlalchemy import text
 
     migrations = [
+        # Users table
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS instagram_handle VARCHAR(30)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS instagram_profile_pic TEXT",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS linkedin_handle VARCHAR(100)",
+        # Posts table
+        "ALTER TABLE posts ADD COLUMN IF NOT EXISTS venue_name VARCHAR(255)",
+        "ALTER TABLE posts ADD COLUMN IF NOT EXISTS venue_id VARCHAR(255)",
     ]
 
     engine = get_engine()
