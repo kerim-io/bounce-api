@@ -36,7 +36,7 @@ class User(Base):
 
     # Social handles
     instagram_handle = Column(String(30), nullable=True)
-    instagram_profile_pic = Column(String(500), nullable=True)
+    instagram_profile_pic = Column(Text, nullable=True)
     linkedin_handle = Column(String(100), nullable=True)
 
     # Legacy fields
