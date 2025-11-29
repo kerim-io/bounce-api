@@ -219,6 +219,24 @@ async def create_bounce(
                         except Exception:
                             pass
 
+        # Send in-app notification to each invited user
+        for user_id in invited_ids:
+            await manager.send_to_user(user_id, {
+                "type": "notification",
+                "notification_type": "bounce_invite",
+                "message": f"{current_user.nickname or current_user.first_name} invited you to bounce at {bounce.venue_name}",
+                "actor": {
+                    "user_id": current_user.id,
+                    "nickname": current_user.nickname,
+                    "profile_picture": current_user.profile_picture
+                },
+                "bounce": {
+                    "id": bounce.id,
+                    "venue_name": bounce.venue_name,
+                    "google_place_id": bounce.google_place_id
+                }
+            })
+
         return bounce_response
 
     except Exception as e:
@@ -674,15 +692,35 @@ async def invite_to_bounce(
 
     # Add new invites
     added = 0
+    newly_invited = []
     for user_id in invite_data.user_ids:
         if user_id not in existing_user_ids and user_id != current_user.id:
             invite = BounceInvite(bounce_id=bounce_id, user_id=user_id)
             db.add(invite)
             added += 1
+            newly_invited.append(user_id)
 
     await db.commit()
 
     logger.info(f"Added {added} invites to bounce {bounce_id}")
+
+    # Send in-app notification to each newly invited user
+    for user_id in newly_invited:
+        await manager.send_to_user(user_id, {
+            "type": "notification",
+            "notification_type": "bounce_invite",
+            "message": f"{current_user.nickname or current_user.first_name} invited you to bounce at {bounce.venue_name}",
+            "actor": {
+                "user_id": current_user.id,
+                "nickname": current_user.nickname,
+                "profile_picture": current_user.profile_picture
+            },
+            "bounce": {
+                "id": bounce.id,
+                "venue_name": bounce.venue_name,
+                "google_place_id": bounce.google_place_id
+            }
+        })
 
     return {"added": added, "total": len(existing_user_ids) + added}
 

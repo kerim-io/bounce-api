@@ -43,6 +43,23 @@ class ConnectionManager:
         for user_id, connection in dead_connections:
             self.disconnect(connection, user_id)
 
+    async def send_to_user(self, user_id: int, message: dict):
+        """Send a message to a specific user"""
+        if user_id not in self.active_connections:
+            return False
+
+        dead_connections = []
+        for connection in self.active_connections[user_id]:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                dead_connections.append(connection)
+
+        for connection in dead_connections:
+            self.disconnect(connection, user_id)
+
+        return True
+
 
 manager = ConnectionManager()
 
@@ -76,8 +93,42 @@ async def broadcast_location_expired(location_id: str):
     })
 
 
-# NOTE: /ws/feed endpoint has been archived - see archived/websocket_feed.py
-# The client app is no longer using the live feed functionality
+@router.websocket("/ws/notifications")
+async def notifications_websocket(
+    websocket: WebSocket,
+    token: str = Query(...)
+):
+    """
+    WebSocket endpoint for real-time in-app notifications.
+    """
+    import jwt
+    from core.config import settings
+
+    # Validate token and get user_id
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id = int(payload.get("sub"))
+    except Exception as e:
+        logger.warning(f"WebSocket auth failed: {e}")
+        await websocket.close(code=4001, reason="Invalid token")
+        return
+
+    await manager.connect(websocket, user_id)
+    logger.info(f"WebSocket connected: user {user_id}")
+
+    try:
+        await websocket.send_json({"type": "connected", "user_id": user_id})
+
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected: user {user_id}")
+    except Exception as e:
+        logger.error(f"WebSocket error for user {user_id}: {e}")
+    finally:
+        manager.disconnect(websocket, user_id)
 
 
 @router.websocket("/ws/livestream/{room_id}")

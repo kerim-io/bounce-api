@@ -55,11 +55,24 @@ async def run_migrations():
         # Posts table
         "ALTER TABLE posts ADD COLUMN IF NOT EXISTS venue_name VARCHAR(255)",
         "ALTER TABLE posts ADD COLUMN IF NOT EXISTS google_place_id VARCHAR(255)",
+        "ALTER TABLE posts ADD COLUMN IF NOT EXISTS place_id INTEGER REFERENCES places(id) ON DELETE SET NULL",
         # Bounces table
         "ALTER TABLE bounces ADD COLUMN IF NOT EXISTS google_place_id VARCHAR(255)",
-        # Indexes for google_place_id
+        "ALTER TABLE bounces ADD COLUMN IF NOT EXISTS place_id INTEGER REFERENCES places(id) ON DELETE SET NULL",
+        # Check-ins table
+        "ALTER TABLE check_ins ADD COLUMN IF NOT EXISTS google_place_id VARCHAR(255)",
+        "ALTER TABLE check_ins ADD COLUMN IF NOT EXISTS place_id INTEGER REFERENCES places(id) ON DELETE SET NULL",
+        "ALTER TABLE check_ins ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()",
+        "ALTER TABLE check_ins ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
+        # Indexes
         "CREATE INDEX IF NOT EXISTS ix_posts_google_place_id ON posts(google_place_id)",
         "CREATE INDEX IF NOT EXISTS ix_bounces_google_place_id ON bounces(google_place_id)",
+        "CREATE INDEX IF NOT EXISTS ix_posts_place_id ON posts(place_id)",
+        "CREATE INDEX IF NOT EXISTS ix_bounces_place_id ON bounces(place_id)",
+        "CREATE INDEX IF NOT EXISTS idx_checkins_google_place_id ON check_ins(google_place_id)",
+        "CREATE INDEX IF NOT EXISTS idx_checkins_place_id ON check_ins(place_id)",
+        "CREATE INDEX IF NOT EXISTS idx_checkins_last_seen ON check_ins(last_seen_at)",
+        "CREATE INDEX IF NOT EXISTS idx_checkins_active ON check_ins(is_active) WHERE is_active = true",
     ]
 
     engine = get_engine()

@@ -16,7 +16,7 @@ from db.database import get_async_session
 from db.models import User, Follow, Post, Like, CheckIn, RefreshToken, AnonymousLocation, Livestream
 from api.dependencies import get_current_user
 from core.config import settings
-from api.routes.websocket import broadcast_location_update
+from api.routes.websocket import broadcast_location_update, manager as ws_manager
 from services.geofence import haversine_distance
 import re
 
@@ -687,6 +687,22 @@ async def follow_user(
     db.add(follow)
     await db.commit()
 
+    # Send in-app notification to the followed user
+    notification_payload = {
+        "type": "notification",
+        "notification_type": "new_follower",
+        "message": f"{current_user.nickname or current_user.first_name} started following you",
+        "actor": {
+            "user_id": current_user.id,
+            "nickname": current_user.nickname,
+            "profile_picture": current_user.profile_picture
+        }
+    }
+
+    logger.info(f"Sending follow notification to user {user_id}: {notification_payload}")
+    sent = await ws_manager.send_to_user(user_id, notification_payload)
+    logger.info(f"Follow notification sent to user {user_id}: {sent} (user connected: {user_id in ws_manager.active_connections})")
+
     return {"status": "success"}
 
 
@@ -1129,6 +1145,34 @@ async def get_qr_token(
     qr_url = f"{settings.QR_DEEP_LINK_SCHEME}{current_user.qr_token}"
 
     return QRTokenResponse(qr_token=current_user.qr_token, qr_url=qr_url)
+
+
+@router.get("/{user_id}/qr-token", response_model=QRTokenResponse)
+async def get_user_qr_token(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Get another user's QR code deep link URL.
+    """
+    # Look up the user
+    result = await db.execute(select(User).where(User.id == user_id))
+    target_user = result.scalar_one_or_none()
+
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Generate token if doesn't exist
+    if not target_user.qr_token:
+        target_user.qr_token = generate_qr_token(target_user.id)
+        await db.commit()
+        await db.refresh(target_user)
+
+    # Build full deep link URL for QR code
+    qr_url = f"{settings.QR_DEEP_LINK_SCHEME}{target_user.qr_token}"
+
+    return QRTokenResponse(qr_token=target_user.qr_token, qr_url=qr_url)
 
 
 @router.post("/qr-connect", response_model=QRConnectResponse)
