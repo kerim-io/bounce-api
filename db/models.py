@@ -15,11 +15,12 @@ class User(Base):
     # Profile fields
     first_name = Column(String(100), nullable=True)
     last_name = Column(String(100), nullable=True)
-    nickname = Column(String(50), nullable=True)
+    nickname = Column(String(50), nullable=True, index=True)
     employer = Column(String(200), nullable=True)
     phone = Column(String(20), nullable=True)
     email = Column(String(255), nullable=True)
     profile_picture = Column(String, nullable=True)
+    instagram_handle = Column(String(30), nullable=True, index=True)
 
     # Privacy settings for Art Basel Miami access control
     phone_visible = Column(Boolean, default=False, nullable=False)

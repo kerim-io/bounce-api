@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, or_, func
 from pydantic import BaseModel
 from typing import Optional, List
 import aiofiles
@@ -48,6 +48,7 @@ class ProfileUpdate(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     profile_picture_url: Optional[str] = None
+    instagram_handle: Optional[str] = None
     # Privacy settings for Art Basel Miami access control
     phone_visible: Optional[bool] = None
     email_visible: Optional[bool] = None
@@ -68,6 +69,7 @@ class ProfileResponse(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     profile_picture: Optional[str]
+    instagram_handle: Optional[str] = None
     has_profile: bool
     # Privacy flags (only shown to owner)
     phone_visible: Optional[bool] = None
@@ -104,6 +106,7 @@ class SimpleUserResponse(BaseModel):
     last_name: Optional[str]
     profile_picture: Optional[str]
     employer: Optional[str]
+    instagram_handle: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -167,6 +170,27 @@ class QRConnectResponse(BaseModel):
     success: bool
     message: str
     connected_user: SimpleUserResponse
+
+
+class UserSearchResult(BaseModel):
+    """Individual user result for search autocomplete"""
+    id: int
+    nickname: Optional[str]
+    first_name: Optional[str]
+    last_name: Optional[str]
+    profile_picture: Optional[str]
+    instagram_handle: Optional[str]
+    match_type: str  # 'nickname' or 'instagram'
+
+    class Config:
+        from_attributes = True
+
+
+class UserSearchResponse(BaseModel):
+    """Response for user search autocomplete"""
+    query: str
+    results: List[UserSearchResult]
+    total_count: int
 
 
 @router.get("/me", response_model=UserResponse)
@@ -244,6 +268,10 @@ async def update_profile_full(
         current_user.email = profile_data.email
     if profile_data.profile_picture_url is not None:
         current_user.profile_picture = profile_data.profile_picture_url
+    if profile_data.instagram_handle is not None:
+        # Normalize instagram handle: remove @ prefix if present, lowercase
+        handle = profile_data.instagram_handle.strip().lstrip('@').lower()
+        current_user.instagram_handle = handle if handle else None
 
     # Privacy settings
     if profile_data.phone_visible is not None:
@@ -263,6 +291,7 @@ async def update_profile_full(
         phone=current_user.phone,
         email=current_user.email,
         profile_picture=current_user.profile_picture,
+        instagram_handle=current_user.instagram_handle,
         has_profile=current_user.has_profile,
         phone_visible=current_user.phone_visible,
         email_visible=current_user.email_visible,
@@ -887,6 +916,7 @@ async def get_user_profile(
         phone=user.phone if (user.phone_visible and can_see_private) else None,
         email=user.email if (user.email_visible and can_see_private) else None,
         profile_picture=user.profile_picture,
+        instagram_handle=user.instagram_handle,
         has_profile=user.has_profile,
         posts_count=posts_count,
         followers_count=followers_count,
@@ -1202,6 +1232,88 @@ async def qr_connect(
             first_name=target_user.first_name,
             last_name=target_user.last_name,
             profile_picture=target_user.profile_picture,
-            employer=target_user.employer
+            employer=target_user.employer,
+            instagram_handle=target_user.instagram_handle
         )
+    )
+
+
+@router.get("/search", response_model=UserSearchResponse)
+async def search_users(
+    q: str,
+    limit: int = 10,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Search users by nickname or Instagram handle for autocomplete.
+
+    Designed for debounce-style search - returns matches as user types.
+    Returns profile pictures for display in autocomplete dropdown.
+
+    Parameters:
+    - q: Search query (min 1 character). Searches both nickname and Instagram handle.
+    - limit: Max results to return (default 10, max 50)
+
+    Returns:
+    - List of matching users with profile info and match_type indicator
+    """
+    # Validate query
+    query = q.strip().lstrip('@').lower()
+    if len(query) < 1:
+        return UserSearchResponse(query=q, results=[], total_count=0)
+
+    # Cap limit to prevent abuse
+    limit = min(limit, 50)
+
+    # Search for users matching nickname or instagram_handle (case-insensitive prefix match)
+    # Uses ILIKE for case-insensitive matching with wildcard suffix for autocomplete
+    search_pattern = f"{query}%"
+
+    result = await db.execute(
+        select(User)
+        .where(
+            User.is_active == True,
+            User.id != current_user.id,  # Exclude current user
+            or_(
+                func.lower(User.nickname).like(search_pattern),
+                func.lower(User.instagram_handle).like(search_pattern)
+            )
+        )
+        .order_by(
+            # Prioritize exact matches, then prefix matches
+            func.length(User.nickname).asc()
+        )
+        .limit(limit)
+    )
+    users = result.scalars().all()
+
+    # Build results with match type indicator
+    search_results = []
+    for user in users:
+        # Determine which field matched
+        nickname_lower = (user.nickname or "").lower()
+        instagram_lower = (user.instagram_handle or "").lower()
+
+        if nickname_lower.startswith(query):
+            match_type = "nickname"
+        elif instagram_lower.startswith(query):
+            match_type = "instagram"
+        else:
+            match_type = "nickname"  # Fallback
+
+        search_results.append(UserSearchResult(
+            id=user.id,
+            nickname=user.nickname,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            profile_picture=user.profile_picture,
+            instagram_handle=user.instagram_handle,
+            match_type=match_type
+        ))
+
+    return UserSearchResponse(
+        query=q,
+        results=search_results,
+        total_count=len(search_results)
     )
