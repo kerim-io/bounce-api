@@ -105,12 +105,13 @@ async def get_place_with_photos(
     venue_name: str,
     venue_address: Optional[str],
     latitude: float,
-    longitude: float
+    longitude: float,
+    source: str = "bounce"
 ) -> Optional[Place]:
     """
     Get or create a Place record with photos.
 
-    If the place already exists (by google_place_id), increments bounce_count and returns it.
+    If the place already exists (by google_place_id), increments the appropriate count and returns it.
     If it doesn't exist, fetches details and photos from Google, stores them, and returns the new Place.
 
     Args:
@@ -120,6 +121,7 @@ async def get_place_with_photos(
         venue_address: Venue address (fallback if API fails)
         latitude: Latitude (fallback if API fails)
         longitude: Longitude (fallback if API fails)
+        source: "bounce" or "post" - determines which count to increment
 
     Returns:
         Place object or None if creation failed
@@ -135,10 +137,14 @@ async def get_place_with_photos(
     existing_place = result.scalar_one_or_none()
 
     if existing_place:
-        # Increment bounce count
-        existing_place.bounce_count += 1
+        # Increment the appropriate count
+        if source == "post":
+            existing_place.post_count += 1
+            logger.info(f"Place {google_place_id} already exists, post_count now {existing_place.post_count}")
+        else:
+            existing_place.bounce_count += 1
+            logger.info(f"Place {google_place_id} already exists, bounce_count now {existing_place.bounce_count}")
         await db.flush()
-        logger.info(f"Place {google_place_id} already exists, bounce_count now {existing_place.bounce_count}")
         return existing_place
 
     # Place doesn't exist - fetch from Google and create
@@ -149,6 +155,10 @@ async def get_place_with_photos(
     service = PlacesService(settings.GOOGLE_MAPS_API_KEY)
     details = await service.fetch_place_details_with_photos(google_place_id)
 
+    # Set initial counts based on source
+    initial_bounce_count = 1 if source == "bounce" else 0
+    initial_post_count = 1 if source == "post" else 0
+
     if details:
         # Use API data
         place = Place(
@@ -158,7 +168,8 @@ async def get_place_with_photos(
             latitude=details["latitude"],
             longitude=details["longitude"],
             types=json.dumps(details["types"]) if details["types"] else None,
-            bounce_count=1
+            bounce_count=initial_bounce_count,
+            post_count=initial_post_count
         )
     else:
         # Fallback to provided data if API fails
@@ -170,7 +181,8 @@ async def get_place_with_photos(
             latitude=latitude,
             longitude=longitude,
             types=None,
-            bounce_count=1
+            bounce_count=initial_bounce_count,
+            post_count=initial_post_count
         )
 
     db.add(place)

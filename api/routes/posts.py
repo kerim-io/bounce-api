@@ -13,6 +13,7 @@ from db.database import get_async_session
 from db.models import Post, User, Like
 from api.dependencies import get_current_user
 from core.config import settings
+from services.places import get_place_with_photos
 
 router = APIRouter(prefix="/posts", tags=["posts"])
 logger = logging.getLogger(__name__)
@@ -189,8 +190,25 @@ async def create_post(
             )
 
     try:
+        # Store/link the place if google_place_id is provided
+        place_id = None
+        if post_data.google_place_id:
+            place = await get_place_with_photos(
+                db=db,
+                google_place_id=post_data.google_place_id,
+                venue_name=post_data.venue_name or "",
+                venue_address=None,
+                latitude=post_data.latitude or 0,
+                longitude=post_data.longitude or 0,
+                source="post"
+            )
+            if place:
+                place_id = place.id
+                logger.info(f"Linked post to place {place.id} ({place.google_place_id})")
+
         post = Post(
             user_id=current_user.id,
+            place_id=place_id,
             content=content,
             media_url=post_data.media_url,
             media_type=post_data.media_type,

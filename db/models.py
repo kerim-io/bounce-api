@@ -80,6 +80,7 @@ class Post(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    place_id = Column(Integer, ForeignKey("places.id", ondelete="SET NULL"), nullable=True, index=True)
     content = Column(Text, nullable=False)
     media_url = Column(String, nullable=True)
     media_type = Column(String(10), nullable=True)  # 'image', 'video', None for text
@@ -91,6 +92,7 @@ class Post(Base):
 
     # Relationships
     user = relationship("User", back_populates="posts")
+    place = relationship("Place", back_populates="posts")
     likes = relationship("Like", back_populates="post", cascade="all, delete-orphan")
 
 
@@ -245,7 +247,7 @@ class BounceAttendee(Base):
 class Place(Base):
     """
     Stores Google Places data to avoid duplicate API calls.
-    When a bounce is created, the place is stored/linked here.
+    When a bounce or post is created, the place is stored/linked here.
     """
     __tablename__ = "places"
 
@@ -256,13 +258,15 @@ class Place(Base):
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
     types = Column(Text, nullable=True)  # JSON array of place types
-    bounce_count = Column(Integer, default=1, nullable=False)  # Incremented when new bounces reference this place
+    bounce_count = Column(Integer, default=0, nullable=False)  # Incremented when new bounces reference this place
+    post_count = Column(Integer, default=0, nullable=False)  # Incremented when new posts reference this place
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     # Relationships
     photos = relationship("GooglePic", back_populates="place", cascade="all, delete-orphan")
     bounces = relationship("Bounce", back_populates="place")
+    posts = relationship("Post", back_populates="place")
 
 
 class GooglePic(Base):
