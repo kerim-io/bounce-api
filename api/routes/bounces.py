@@ -98,6 +98,7 @@ class BounceResponse(BaseModel):
     venue_address: Optional[str]
     latitude: float
     longitude: float
+    google_place_id: Optional[str] = None
     bounce_time: datetime
     is_now: bool
     is_public: bool
@@ -188,6 +189,7 @@ async def create_bounce(
             venue_address=bounce.venue_address,
             latitude=bounce.latitude,
             longitude=bounce.longitude,
+            google_place_id=bounce.google_place_id,
             bounce_time=bounce.bounce_time,
             is_now=bounce.is_now,
             is_public=bounce.is_public,
@@ -281,6 +283,7 @@ async def get_bounces(
             venue_address=bounce.venue_address,
             latitude=bounce.latitude,
             longitude=bounce.longitude,
+            google_place_id=bounce.google_place_id,
             bounce_time=bounce.bounce_time,
             is_now=bounce.is_now,
             is_public=bounce.is_public,
@@ -384,6 +387,7 @@ async def get_map_bounces(
                 venue_address=bounce.venue_address,
                 latitude=bounce.latitude,
                 longitude=bounce.longitude,
+                google_place_id=bounce.google_place_id,
                 bounce_time=bounce.bounce_time,
                 is_now=bounce.is_now,
                 is_public=bounce.is_public,
@@ -431,6 +435,7 @@ async def get_my_bounces(
             venue_address=bounce.venue_address,
             latitude=bounce.latitude,
             longitude=bounce.longitude,
+            google_place_id=bounce.google_place_id,
             bounce_time=bounce.bounce_time,
             is_now=bounce.is_now,
             is_public=bounce.is_public,
@@ -478,6 +483,7 @@ async def get_invited_bounces(
             venue_address=bounce.venue_address,
             latitude=bounce.latitude,
             longitude=bounce.longitude,
+            google_place_id=bounce.google_place_id,
             bounce_time=bounce.bounce_time,
             is_now=bounce.is_now,
             is_public=bounce.is_public,
@@ -542,6 +548,7 @@ async def get_public_bounces(
                     venue_address=bounce.venue_address,
                     latitude=bounce.latitude,
                     longitude=bounce.longitude,
+                    google_place_id=bounce.google_place_id,
                     bounce_time=bounce.bounce_time,
                     is_now=bounce.is_now,
                     is_public=bounce.is_public,
@@ -604,6 +611,7 @@ async def get_bounce(
         venue_address=bounce.venue_address,
         latitude=bounce.latitude,
         longitude=bounce.longitude,
+        google_place_id=bounce.google_place_id,
         bounce_time=bounce.bounce_time,
         is_now=bounce.is_now,
         is_public=bounce.is_public,

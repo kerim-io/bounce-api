@@ -291,7 +291,6 @@ async def update_profile_full(
         phone=current_user.phone,
         email=current_user.email,
         profile_picture=current_user.profile_picture,
-        instagram_handle=current_user.instagram_handle,
         has_profile=current_user.has_profile,
         phone_visible=current_user.phone_visible,
         email_visible=current_user.email_visible,
@@ -806,53 +805,6 @@ async def get_user_followers(
             employer=u.employer
         )
         for u in users
-    ]
-
-
-@router.get("/search", response_model=List[SimpleUserResponse])
-async def search_users(
-    q: str,
-    limit: int = 20,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_session)
-):
-    """
-    Search for users by name or nickname.
-
-    Searches across nickname, first_name, and last_name fields.
-    Returns up to `limit` results (default 20).
-    """
-    if not q or len(q.strip()) < 2:
-        raise HTTPException(status_code=400, detail="Search query must be at least 2 characters")
-
-    search_term = f"%{q.strip().lower()}%"
-
-    from sqlalchemy import or_, func as sql_func
-
-    result = await db.execute(
-        select(User)
-        .where(
-            or_(
-                sql_func.lower(User.nickname).like(search_term),
-                sql_func.lower(User.first_name).like(search_term),
-                sql_func.lower(User.last_name).like(search_term),
-                sql_func.lower(User.username).like(search_term)
-            )
-        )
-        .limit(limit)
-    )
-    users = result.scalars().all()
-
-    return [
-        SimpleUserResponse(
-            id=user.id,
-            nickname=user.nickname,
-            first_name=user.first_name,
-            last_name=user.last_name,
-            profile_picture=user.profile_picture,
-            employer=user.employer
-        )
-        for user in users
     ]
 
 

@@ -1,0 +1,6 @@
+
+# 2025-11-29 12:13:50.182367
++my railway postgres is way behind the schema of the local postgres here. Write me a script i can use that will update the railway postgres to match my local one
+
+# 2025-11-29 12:17:02.510829
++/apply

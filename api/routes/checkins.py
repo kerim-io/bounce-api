@@ -1,16 +1,35 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, and_, func
 from pydantic import BaseModel
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+from math import radians, sin, cos, sqrt, atan2
 
 from db.database import get_async_session
-from db.models import CheckIn, User
+from db.models import CheckIn, User, Place, Bounce
 from api.dependencies import get_current_user
 from services.geofence import is_in_basel_area
+from services.places.service import get_place_with_photos
 
 router = APIRouter(prefix="/checkins", tags=["checkins"])
+
+# Constants
+CHECKIN_PROXIMITY_METERS = 100  # Must be within 100m to check in
+CHECKIN_EXPIRY_MINUTES = 15  # Check-ins expire after 15 minutes of inactivity
+
+
+def haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Calculate distance between two points in meters using Haversine formula."""
+    R = 6371000  # Earth's radius in meters
+    phi1, phi2 = radians(lat1), radians(lat2)
+    delta_phi = radians(lat2 - lat1)
+    delta_lambda = radians(lng2 - lng1)
+
+    a = sin(delta_phi / 2) ** 2 + cos(phi1) * cos(phi2) * sin(delta_lambda / 2) ** 2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+
+    return R * c
 
 
 class CheckInCreate(BaseModel):
@@ -95,3 +114,260 @@ async def get_recent_checkins(
         )
         for checkin, user in checkins_data
     ]
+
+
+# ============================================================================
+# VENUE CHECK-IN ENDPOINTS
+# ============================================================================
+
+class VenueCheckInResponse(BaseModel):
+    id: int
+    user_id: int
+    google_place_id: str
+    venue_name: Optional[str]
+    checked_in_at: datetime
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+
+class VenueCheckInCountResponse(BaseModel):
+    google_place_id: str
+    count: int
+
+
+class VenueAttendeeResponse(BaseModel):
+    user_id: int
+    nickname: Optional[str]
+    profile_picture: Optional[str]
+    checked_in_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class VenueAttendeesResponse(BaseModel):
+    google_place_id: str
+    count: int
+    attendees: List[VenueAttendeeResponse]
+    can_see_details: bool  # True if user is part of a bounce at this venue
+
+
+@router.post("/venue/{google_place_id}", response_model=VenueCheckInResponse)
+async def checkin_to_venue(
+    google_place_id: str,
+    lat: float,
+    lng: float,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Check in to a venue by Google Place ID.
+    User must be within 100m of the venue location.
+    """
+    # Get or create the Place record
+    place = await get_place_with_photos(db, google_place_id, source="checkin")
+
+    if not place:
+        raise HTTPException(status_code=404, detail="Place not found")
+
+    # Verify user is within proximity
+    distance = haversine_distance(lat, lng, place.latitude, place.longitude)
+    if distance > CHECKIN_PROXIMITY_METERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"You must be within {CHECKIN_PROXIMITY_METERS}m of the venue to check in. You are {int(distance)}m away."
+        )
+
+    # Check for existing active check-in at this venue
+    expiry_time = datetime.now(timezone.utc) - timedelta(minutes=CHECKIN_EXPIRY_MINUTES)
+    existing_checkin = await db.execute(
+        select(CheckIn).where(
+            and_(
+                CheckIn.user_id == current_user.id,
+                CheckIn.google_place_id == google_place_id,
+                CheckIn.is_active == True,
+                CheckIn.last_seen_at >= expiry_time
+            )
+        )
+    )
+    existing = existing_checkin.scalar_one_or_none()
+
+    if existing:
+        # Update last_seen_at to refresh the check-in
+        existing.last_seen_at = datetime.now(timezone.utc)
+        existing.latitude = lat
+        existing.longitude = lng
+        await db.commit()
+        await db.refresh(existing)
+
+        return VenueCheckInResponse(
+            id=existing.id,
+            user_id=existing.user_id,
+            google_place_id=google_place_id,
+            venue_name=place.name,
+            checked_in_at=existing.created_at,
+            is_active=existing.is_active
+        )
+
+    # Deactivate any other active check-ins for this user (user can only be at one place)
+    await db.execute(
+        select(CheckIn).where(
+            and_(
+                CheckIn.user_id == current_user.id,
+                CheckIn.is_active == True
+            )
+        )
+    )
+    result = await db.execute(
+        select(CheckIn).where(
+            and_(
+                CheckIn.user_id == current_user.id,
+                CheckIn.is_active == True
+            )
+        )
+    )
+    for old_checkin in result.scalars().all():
+        old_checkin.is_active = False
+
+    # Create new check-in
+    checkin = CheckIn(
+        user_id=current_user.id,
+        latitude=lat,
+        longitude=lng,
+        location_name=place.name,
+        google_place_id=google_place_id,
+        place_id=place.id,
+        last_seen_at=datetime.now(timezone.utc),
+        is_active=True
+    )
+    db.add(checkin)
+    await db.commit()
+    await db.refresh(checkin)
+
+    return VenueCheckInResponse(
+        id=checkin.id,
+        user_id=checkin.user_id,
+        google_place_id=google_place_id,
+        venue_name=place.name,
+        checked_in_at=checkin.created_at,
+        is_active=checkin.is_active
+    )
+
+
+@router.get("/venue/{google_place_id}/count", response_model=VenueCheckInCountResponse)
+async def get_venue_checkin_count(
+    google_place_id: str,
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Get count of people checked in at venue (public, no auth required).
+    Only counts check-ins within the last 15 minutes.
+    """
+    expiry_time = datetime.now(timezone.utc) - timedelta(minutes=CHECKIN_EXPIRY_MINUTES)
+
+    result = await db.execute(
+        select(func.count(CheckIn.id)).where(
+            and_(
+                CheckIn.google_place_id == google_place_id,
+                CheckIn.is_active == True,
+                CheckIn.last_seen_at >= expiry_time
+            )
+        )
+    )
+    count = result.scalar() or 0
+
+    return VenueCheckInCountResponse(
+        google_place_id=google_place_id,
+        count=count
+    )
+
+
+@router.get("/venue/{google_place_id}/attendees", response_model=VenueAttendeesResponse)
+async def get_venue_attendees(
+    google_place_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Get list of people checked in at venue.
+    Returns attendee details only if user is part of an active bounce at this venue.
+    Otherwise, returns just the count.
+    """
+    expiry_time = datetime.now(timezone.utc) - timedelta(minutes=CHECKIN_EXPIRY_MINUTES)
+
+    # Get count of active check-ins
+    count_result = await db.execute(
+        select(func.count(CheckIn.id)).where(
+            and_(
+                CheckIn.google_place_id == google_place_id,
+                CheckIn.is_active == True,
+                CheckIn.last_seen_at >= expiry_time
+            )
+        )
+    )
+    count = count_result.scalar() or 0
+
+    # Any authenticated user can see who's checked in at a venue
+    can_see_details = True
+
+    attendees = []
+    if can_see_details:
+        # Get attendee details
+        result = await db.execute(
+            select(CheckIn, User)
+            .join(User, CheckIn.user_id == User.id)
+            .where(
+                and_(
+                    CheckIn.google_place_id == google_place_id,
+                    CheckIn.is_active == True,
+                    CheckIn.last_seen_at >= expiry_time
+                )
+            )
+            .order_by(desc(CheckIn.last_seen_at))
+        )
+
+        for checkin, user in result.all():
+            attendees.append(VenueAttendeeResponse(
+                user_id=user.id,
+                nickname=user.nickname or user.username,
+                profile_picture=user.profile_picture,
+                checked_in_at=checkin.created_at
+            ))
+
+    return VenueAttendeesResponse(
+        google_place_id=google_place_id,
+        count=count,
+        attendees=attendees,
+        can_see_details=can_see_details
+    )
+
+
+@router.delete("/venue/{google_place_id}")
+async def checkout_from_venue(
+    google_place_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Check out from a venue (deactivate check-in).
+    """
+    result = await db.execute(
+        select(CheckIn).where(
+            and_(
+                CheckIn.user_id == current_user.id,
+                CheckIn.google_place_id == google_place_id,
+                CheckIn.is_active == True
+            )
+        )
+    )
+    checkin = result.scalar_one_or_none()
+
+    if not checkin:
+        raise HTTPException(status_code=404, detail="No active check-in found at this venue")
+
+    checkin.is_active = False
+    await db.commit()
+
+    return {"message": "Successfully checked out"}

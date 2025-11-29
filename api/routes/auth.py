@@ -48,6 +48,12 @@ async def apple_signin(
     db: AsyncSession = Depends(get_async_session)
 ):
     """Sign in with Apple - validates code with Apple servers"""
+    # Log what we received from iOS
+    print(f"📱 Apple Auth Request:")
+    print(f"   given_name: {request.given_name}")
+    print(f"   family_name: {request.family_name}")
+    print(f"   email: {request.email}")
+
     try:
         # Verify Apple token
         apple_data = await verify_apple_token(request.code, request.redirect_uri)

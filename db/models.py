@@ -107,8 +107,15 @@ class CheckIn(Base):
     location_name = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
+    # Venue check-in fields (Google Places integration)
+    google_place_id = Column(String(255), nullable=True, index=True)
+    place_id = Column(Integer, ForeignKey("places.id", ondelete="SET NULL"), nullable=True, index=True)
+    last_seen_at = Column(DateTime(timezone=True), server_default=func.now())
+    is_active = Column(Boolean, default=True)
+
     # Relationships
     user = relationship("User", back_populates="check_ins")
+    place = relationship("Place", back_populates="check_ins")
 
 
 class RefreshToken(Base):
@@ -268,6 +275,7 @@ class Place(Base):
     photos = relationship("GooglePic", back_populates="place", cascade="all, delete-orphan")
     bounces = relationship("Bounce", back_populates="place")
     posts = relationship("Post", back_populates="place")
+    check_ins = relationship("CheckIn", back_populates="place")
 
 
 class GooglePic(Base):

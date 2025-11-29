@@ -138,14 +138,22 @@ class PlacePrediction(BaseModel):
     full_description: str  # Combined description
 
 
+class PlacePhoto(BaseModel):
+    """A photo for a place"""
+    url: str
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+
 class PlaceDetails(BaseModel):
-    """Detailed place information including coordinates"""
+    """Detailed place information including coordinates and photos"""
     place_id: str
     name: str
     address: str
     latitude: float
     longitude: float
     types: List[str] = []
+    photos: List[PlacePhoto] = []
 
 
 class AutocompleteResponse(BaseModel):
@@ -220,15 +228,18 @@ async def places_autocomplete(
         raise HTTPException(status_code=502, detail=f"Failed to reach Places API: {str(e)}")
 
 
+GOOGLE_PLACES_PHOTO_URL = "https://maps.googleapis.com/maps/api/place/photo"
+
+
 @router.get("/places/details/{place_id}", response_model=PlaceDetails)
 async def get_place_details(
     place_id: str,
     current_user: User = Depends(get_current_user)
 ):
     """
-    Get full details for a place including coordinates.
+    Get full details for a place including coordinates and photos.
 
-    Call this after user selects a place from autocomplete to get lat/lng.
+    Call this after user selects a place from autocomplete to get lat/lng and photos.
 
     Example: /geocoding/places/details/ChIJN1t_tDeuEmsRUsoyG83frY4
     """
@@ -241,7 +252,7 @@ async def get_place_details(
     params = {
         "place_id": place_id,
         "key": settings.GOOGLE_MAPS_API_KEY,
-        "fields": "name,formatted_address,geometry,types"
+        "fields": "name,formatted_address,geometry,types,photos"
     }
 
     try:
@@ -259,13 +270,31 @@ async def get_place_details(
                 result = data.get("result", {})
                 location = result.get("geometry", {}).get("location", {})
 
+                # Build photo URLs (up to 5 photos)
+                photos = []
+                for photo in result.get("photos", [])[:5]:
+                    photo_ref = photo.get("photo_reference")
+                    if photo_ref:
+                        photo_url = (
+                            f"{GOOGLE_PLACES_PHOTO_URL}"
+                            f"?maxwidth=800"
+                            f"&photo_reference={photo_ref}"
+                            f"&key={settings.GOOGLE_MAPS_API_KEY}"
+                        )
+                        photos.append(PlacePhoto(
+                            url=photo_url,
+                            width=photo.get("width"),
+                            height=photo.get("height")
+                        ))
+
                 return PlaceDetails(
                     place_id=place_id,
                     name=result.get("name", ""),
                     address=result.get("formatted_address", ""),
                     latitude=location.get("lat", 0),
                     longitude=location.get("lng", 0),
-                    types=result.get("types", [])
+                    types=result.get("types", []),
+                    photos=photos
                 )
 
     except aiohttp.ClientError as e:
