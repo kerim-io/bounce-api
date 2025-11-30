@@ -9,10 +9,9 @@ This script:
 3. Runs migrations
 
 Usage:
-    DATABASE_URL="postgresql+asyncpg://..." python scripts/rebuild_railway_db.py
+    DATABASE_URL="postgresql+asyncpg://user:pass@host:port/db" python scripts/rebuild_railway_db.py
 
-Or with Railway CLI:
-    railway run python scripts/rebuild_railway_db.py
+Note: Use the PUBLIC Railway database URL (with proxy.rlwy.net), not the internal one.
 """
 
 import asyncio
@@ -24,7 +23,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sqlalchemy import text
-from db.database import get_engine, Base, run_migrations
+from sqlalchemy.ext.asyncio import create_async_engine
+from db.database import Base, run_migrations
 
 
 # All tables in dependency order (children first, parents last)
@@ -47,10 +47,22 @@ TABLES_TO_DROP = [
 ]
 
 
-async def drop_all_tables():
-    """Drop all tables in the correct order"""
-    engine = get_engine()
+def get_db_url():
+    """Get database URL and ensure it uses asyncpg"""
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        print("❌ DATABASE_URL not set in the environment.")
+        sys.exit(1)
 
+    # Convert postgresql:// to postgresql+asyncpg://
+    if db_url.startswith("postgresql://"):
+        db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    return db_url
+
+
+async def drop_all_tables(engine):
+    """Drop all tables in the correct order"""
     async with engine.begin() as conn:
         # First, drop all tables
         for table in TABLES_TO_DROP:
@@ -75,12 +87,10 @@ async def drop_all_tables():
                 print(f"   ✗ Failed to drop sequence {seq_name}: {e}")
 
 
-async def create_all_tables():
+async def create_all_tables(engine):
     """Create all tables from SQLAlchemy models"""
     # Import all models to ensure they're registered with Base
     from db import models  # noqa: F401
-
-    engine = get_engine()
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -89,13 +99,10 @@ async def create_all_tables():
 
 
 async def main():
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        print("❌ DATABASE_URL not set in the environment.")
-        sys.exit(1)
+    db_url = get_db_url()
 
     print(f"🔗 DATABASE_URL detected.")
-    print(f"   → {db_url[:50]}...\n")
+    print(f"   → {db_url[:60]}...\n")
 
     # Safety confirmation
     print("⚠️  WARNING: This will DELETE ALL DATA in the database!")
@@ -107,15 +114,20 @@ async def main():
         sys.exit(1)
 
     try:
+        # Create engine directly with the URL
+        engine = create_async_engine(db_url, echo=False)
+
         print("\n🗑️  Dropping all tables...")
-        await drop_all_tables()
+        await drop_all_tables(engine)
 
         print("\n🔨 Creating all tables from models...")
-        await create_all_tables()
+        await create_all_tables(engine)
 
         print("\n🔄 Running migrations...")
         await run_migrations()
         print("   ✓ Migrations complete")
+
+        await engine.dispose()
 
         print("\n✅ Database rebuilt successfully!")
 

@@ -154,6 +154,77 @@ class VenueAttendeesResponse(BaseModel):
     can_see_details: bool  # True if user is part of a bounce at this venue
 
 
+class VenueWithCheckInsResponse(BaseModel):
+    google_place_id: str
+    name: str
+    address: Optional[str]
+    latitude: float
+    longitude: float
+    checkin_count: int
+    photos: List[dict] = []
+
+
+class VenuesWithCheckInsResponse(BaseModel):
+    venues: List[VenueWithCheckInsResponse]
+
+
+@router.get("/area", response_model=VenuesWithCheckInsResponse)
+async def get_venues_with_checkins_in_area(
+    lat: float,
+    lng: float,
+    radius: float = 5000,
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Get all venues with active check-ins within a radius.
+    Returns venues with their check-in counts for map display.
+    """
+    expiry_time = datetime.now(timezone.utc) - timedelta(minutes=CHECKIN_EXPIRY_MINUTES)
+
+    # Get all active check-ins grouped by place
+    result = await db.execute(
+        select(
+            CheckIn.google_place_id,
+            Place.name,
+            Place.address,
+            Place.latitude,
+            Place.longitude,
+            func.count(CheckIn.id).label('checkin_count')
+        )
+        .join(Place, CheckIn.place_id == Place.id)
+        .where(
+            and_(
+                CheckIn.is_active == True,
+                CheckIn.last_seen_at >= expiry_time
+            )
+        )
+        .group_by(
+            CheckIn.google_place_id,
+            Place.name,
+            Place.address,
+            Place.latitude,
+            Place.longitude
+        )
+    )
+
+    venues = []
+    for row in result.all():
+        # Filter by distance using haversine
+        distance = haversine_distance(lat, lng, row.latitude, row.longitude)
+        if distance <= radius:
+            venues.append(VenueWithCheckInsResponse(
+                google_place_id=row.google_place_id,
+                name=row.name or "Unknown Venue",
+                address=row.address,
+                latitude=row.latitude,
+                longitude=row.longitude,
+                checkin_count=row.checkin_count,
+                photos=[]
+            ))
+
+    return VenuesWithCheckInsResponse(venues=venues)
+
+
 @router.post("/venue/{google_place_id}", response_model=VenueCheckInResponse)
 async def checkin_to_venue(
     google_place_id: str,
