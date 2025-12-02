@@ -6,7 +6,7 @@ from pathlib import Path
 import logging
 
 from db.database import create_db_and_tables
-from api.routes import auth, posts, users, checkins, websocket, likes, geocoding, locations, livestream, bounces
+from api.routes import auth, users, checkins, websocket, likes, geocoding, locations, bounces
 from core.config import settings
 
 # Configure logging
@@ -55,14 +55,12 @@ app.mount("/files", StaticFiles(directory=settings.UPLOAD_DIR), name="files")
 
 # Include routers
 app.include_router(auth.router)
-app.include_router(posts.router)
 app.include_router(users.router)
 app.include_router(checkins.router)
 app.include_router(websocket.router)
 app.include_router(likes.router)
 app.include_router(geocoding.router)
 app.include_router(locations.router)
-app.include_router(livestream.router)
 app.include_router(bounces.router)
 
 

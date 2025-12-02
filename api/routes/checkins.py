@@ -176,6 +176,7 @@ class VenueWithCheckInsResponse(BaseModel):
 
 class VenuesWithCheckInsResponse(BaseModel):
     venues: List[VenueWithCheckInsResponse]
+    total_checked_in_users: int
 
 
 @router.get("/area", response_model=VenuesWithCheckInsResponse)
@@ -248,7 +249,8 @@ async def get_venues_with_checkins_in_area(
                 photos=photos
             ))
 
-    return VenuesWithCheckInsResponse(venues=venues)
+    total_users = sum(v.checkin_count for v in venues)
+    return VenuesWithCheckInsResponse(venues=venues, total_checked_in_users=total_users)
 
 
 @router.post("/venue/{place_id}", response_model=VenueCheckInResponse)
