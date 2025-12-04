@@ -177,6 +177,60 @@ async def passcode_auth(
     )
 
 
+@router.get("/debug/{user_id}")
+async def debug_user(
+    user_id: int,
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Debug endpoint to check user profile data"""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        return {"error": "User not found"}
+    return {
+        "id": user.id,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "nickname": user.nickname,
+        "email": user.email,
+        "has_profile": user.has_profile
+    }
+
+
+@router.post("/fix-profile/{user_id}")
+async def fix_user_profile(
+    user_id: int,
+    nickname: str,
+    first_name: str = None,
+    last_name: str = None,
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Admin endpoint to fix user profile data"""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if nickname:
+        user.nickname = nickname
+    if first_name:
+        user.first_name = first_name
+    if last_name:
+        user.last_name = last_name
+
+    await db.commit()
+    await db.refresh(user)
+
+    return {
+        "success": True,
+        "id": user.id,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "nickname": user.nickname,
+        "has_profile": user.has_profile
+    }
+
+
 @router.post("/refresh", response_model=AuthResponse)
 async def refresh_token_endpoint(
     request: RefreshTokenRequest,

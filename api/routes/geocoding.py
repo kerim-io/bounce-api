@@ -259,10 +259,10 @@ async def places_autocomplete(
         "types": "establishment",  # Focus on businesses/venues
     }
 
-    # Add location bias if provided (biases results toward this location)
+    # Add location bias - smaller radius = stronger preference for nearby results
     if lat is not None and lng is not None:
         params["location"] = f"{lat},{lng}"
-        params["radius"] = "50000"  # 50km radius bias
+        params["radius"] = "2000"  # 2km - tight bias for strong local preference
 
     try:
         ssl_ctx = get_ssl_context()
