@@ -321,7 +321,98 @@ async def places_autocomplete(
         raise HTTPException(status_code=502, detail=f"Failed to reach Places API: {str(e)}")
 
 
+GOOGLE_PLACES_NEARBY_URL = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
 GOOGLE_PLACES_PHOTO_URL = "https://maps.googleapis.com/maps/api/place/photo"
+
+
+@router.get("/places/nearby", response_model=AutocompleteResponse)
+async def places_nearby(
+    lat: float = Query(..., ge=-90, le=90, description="User latitude"),
+    lng: float = Query(..., ge=-180, le=180, description="User longitude"),
+    radius: int = Query(1000, ge=100, le=50000, description="Search radius in meters"),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get nearby places sorted by distance.
+
+    Returns establishments near the user's location, sorted closest first.
+    Used for pre-populating search results before user types.
+
+    Example: /geocoding/places/nearby?lat=51.38&lng=0.07&radius=1000
+    """
+    if not settings.GOOGLE_MAPS_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Places API not configured. GOOGLE_MAPS_API_KEY required."
+        )
+
+    params = {
+        "location": f"{lat},{lng}",
+        "radius": str(radius),
+        "type": "establishment",
+        "rankby": "prominence",  # Gets popular places, we'll sort by distance
+        "key": settings.GOOGLE_MAPS_API_KEY,
+    }
+
+    try:
+        ssl_ctx = get_ssl_context()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(GOOGLE_PLACES_NEARBY_URL, params=params, ssl=ssl_ctx) as response:
+                data = await response.json()
+
+                if data.get("status") not in ("OK", "ZERO_RESULTS"):
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Places API error: {data.get('status')}"
+                    )
+
+                raw_results = data.get("results", [])
+
+                if not raw_results:
+                    return AutocompleteResponse(predictions=[])
+
+                # Build predictions with distance
+                predictions = []
+                for place in raw_results[:15]:  # Limit to 15 results
+                    location = place.get("geometry", {}).get("location", {})
+                    place_lat = location.get("lat")
+                    place_lng = location.get("lng")
+
+                    # Calculate distance
+                    distance_meters = None
+                    if place_lat and place_lng:
+                        distance_meters = haversine_distance_meters(lat, lng, place_lat, place_lng)
+
+                    # Get photo URL if available
+                    photo_url = None
+                    photos = place.get("photos", [])
+                    if photos:
+                        photo_ref = photos[0].get("photo_reference")
+                        if photo_ref:
+                            photo_url = (
+                                f"https://maps.googleapis.com/maps/api/place/photo"
+                                f"?maxwidth=100&photo_reference={photo_ref}"
+                                f"&key={settings.GOOGLE_MAPS_API_KEY}"
+                            )
+
+                    predictions.append(PlacePrediction(
+                        place_id=place.get("place_id", ""),
+                        name=place.get("name", ""),
+                        address=place.get("vicinity", ""),
+                        full_description=f"{place.get('name', '')} - {place.get('vicinity', '')}",
+                        latitude=place_lat,
+                        longitude=place_lng,
+                        distance_meters=distance_meters,
+                        photo_url=photo_url
+                    ))
+
+                # Sort by distance (closest first)
+                predictions.sort(key=lambda p: p.distance_meters if p.distance_meters is not None else float('inf'))
+
+                return AutocompleteResponse(predictions=predictions)
+
+    except aiohttp.ClientError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to reach Places API: {str(e)}")
 
 
 @router.get("/places/details/{place_id}", response_model=PlaceDetails)
