@@ -15,85 +15,111 @@ Creates:
 """
 
 import asyncio
+import os
 import random
 import sys
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import ssl
+
+import aiohttp
+import certifi
 from faker import Faker
 from sqlalchemy import text
-import aiohttp
-import ssl
-import certifi
 
-from db.database import create_async_session
 from core.config import settings
+from db.database import create_async_session
 
 fake = Faker()
 
 # City configurations with center coordinates and search queries
 CITIES = {
     "miami": {
-        "lat": 25.7617,
-        "lng": -80.1918,
-        "queries": ["bar", "restaurant", "club", "lounge", "hotel", "cafe", "brewery", "rooftop"]
+        "lat": 51.5187,
+        "lng": -0.154853,
+        "queries": [
+            "bar",
+            "restaurant",
+            "club",
+            "lounge",
+            "hotel",
+            "cafe",
+            "brewery",
+            "rooftop",
+        ],
     },
     "fort lauderdale": {
         "lat": 26.1224,
         "lng": -80.1373,
-        "queries": ["bar", "restaurant", "club", "beach bar", "hotel", "cafe"]
+        "queries": ["bar", "restaurant", "club", "beach bar", "hotel", "cafe"],
     },
     "munich": {
         "lat": 48.1351,
         "lng": 11.5820,
-        "queries": ["bar", "restaurant", "biergarten", "club", "hotel", "cafe"]
+        "queries": ["bar", "restaurant", "biergarten", "club", "hotel", "cafe"],
     },
     "berlin": {
         "lat": 52.5200,
         "lng": 13.4050,
-        "queries": ["bar", "restaurant", "club", "lounge", "hotel", "cafe"]
+        "queries": ["bar", "restaurant", "club", "lounge", "hotel", "cafe"],
     },
     "london": {
         "lat": 51.5074,
         "lng": -0.1278,
-        "queries": ["pub", "restaurant", "club", "bar", "hotel", "cafe"]
+        "queries": ["pub", "restaurant", "club", "bar", "hotel", "cafe"],
     },
     "new york": {
         "lat": 40.7128,
         "lng": -74.0060,
-        "queries": ["bar", "restaurant", "club", "lounge", "rooftop", "hotel"]
+        "queries": ["bar", "restaurant", "club", "lounge", "rooftop", "hotel"],
     },
     "los angeles": {
         "lat": 34.0522,
         "lng": -118.2437,
-        "queries": ["bar", "restaurant", "club", "lounge", "hotel", "cafe"]
+        "queries": ["bar", "restaurant", "club", "lounge", "hotel", "cafe"],
     },
     "tokyo": {
         "lat": 35.6762,
         "lng": 139.6503,
-        "queries": ["bar", "restaurant", "izakaya", "club", "hotel", "cafe"]
+        "queries": ["bar", "restaurant", "izakaya", "club", "hotel", "cafe"],
     },
     "paris": {
         "lat": 48.8566,
         "lng": 2.3522,
-        "queries": ["bar", "restaurant", "club", "cafe", "hotel", "bistro"]
+        "queries": ["bar", "restaurant", "club", "cafe", "hotel", "bistro"],
     },
     "dubai": {
         "lat": 25.2048,
         "lng": 55.2708,
-        "queries": ["bar", "restaurant", "club", "lounge", "hotel", "rooftop"]
-    }
+        "queries": ["bar", "restaurant", "club", "lounge", "hotel", "rooftop"],
+    },
 }
 
 EMPLOYERS = [
-    "Google", "Apple", "Meta", "Amazon", "Netflix", "Spotify", "Airbnb",
-    "Uber", "Twitter", "TikTok", "Freelance", "Self-employed",
-    "Goldman Sachs", "Morgan Stanley", "McKinsey", "BCG",
-    "Artist", "Photographer", "Designer", "Architect",
+    "Google",
+    "Apple",
+    "Meta",
+    "Amazon",
+    "Netflix",
+    "Spotify",
+    "Airbnb",
+    "Uber",
+    "Twitter",
+    "TikTok",
+    "Freelance",
+    "Self-employed",
+    "Goldman Sachs",
+    "Morgan Stanley",
+    "McKinsey",
+    "BCG",
+    "Artist",
+    "Photographer",
+    "Designer",
+    "Architect",
 ]
 
 
@@ -109,7 +135,7 @@ async def search_places(session, query: str, lat: float, lng: float) -> list:
         "radius": 5000,  # 5km
         "keyword": query,
         "type": "establishment",
-        "key": settings.GOOGLE_MAPS_API_KEY
+        "key": settings.GOOGLE_MAPS_API_KEY,
     }
 
     ssl_ctx = get_ssl_context()
@@ -171,10 +197,12 @@ async def seed_city(city_name: str):
                     "first_name": first_name,
                     "last_name": last_name,
                     "nickname": nickname,
-                    "employer": random.choice(EMPLOYERS) if random.random() > 0.3 else None,
+                    "employer": random.choice(EMPLOYERS)
+                    if random.random() > 0.3
+                    else None,
                     "email": fake.email() if random.random() > 0.5 else None,
                     "profile_pic": f"https://i.pravatar.cc/150?u={nickname}",
-                }
+                },
             )
             user_id = result.scalar()
             user_ids.append(user_id)
@@ -193,10 +221,7 @@ async def seed_city(city_name: str):
         async with aiohttp.ClientSession() as http_session:
             for query in city["queries"]:
                 results = await search_places(
-                    http_session,
-                    query,
-                    city["lat"],
-                    city["lng"]
+                    http_session, query, city["lat"], city["lng"]
                 )
                 for place in results:
                     place_id = place.get("place_id")
@@ -211,15 +236,17 @@ async def seed_city(city_name: str):
                             if photo_ref:
                                 photo_url = await get_place_photo_url(photo_ref)
 
-                        venues.append({
-                            "place_id": place_id,
-                            "name": place.get("name"),
-                            "lat": place["geometry"]["location"]["lat"],
-                            "lng": place["geometry"]["location"]["lng"],
-                            "address": place.get("vicinity", ""),
-                            "photo_url": photo_url,
-                            "types": place.get("types", [])
-                        })
+                        venues.append(
+                            {
+                                "place_id": place_id,
+                                "name": place.get("name"),
+                                "lat": place["geometry"]["location"]["lat"],
+                                "lng": place["geometry"]["location"]["lng"],
+                                "address": place.get("vicinity", ""),
+                                "photo_url": photo_url,
+                                "types": place.get("types", []),
+                            }
+                        )
 
                 # Limit to ~20 venues
                 if len(venues) >= 20:
@@ -235,7 +262,7 @@ async def seed_city(city_name: str):
             # Check if place already exists
             result = await db.execute(
                 text("SELECT id FROM places WHERE place_id = :place_id"),
-                {"place_id": venue["place_id"]}
+                {"place_id": venue["place_id"]},
             )
             existing = result.scalar()
 
@@ -254,8 +281,8 @@ async def seed_city(city_name: str):
                         "address": venue["address"],
                         "lat": venue["lat"],
                         "lng": venue["lng"],
-                        "types": str(venue["types"]) if venue["types"] else None
-                    }
+                        "types": str(venue["types"]) if venue["types"] else None,
+                    },
                 )
                 place_db_ids[venue["place_id"]] = result.scalar()
 
@@ -303,8 +330,9 @@ async def seed_city(city_name: str):
                         "place_id": venue["place_id"],
                         "places_fk_id": place_db_id,
                         "last_seen_at": last_seen,
-                        "created_at": last_seen - timedelta(minutes=random.randint(30, 180))
-                    }
+                        "created_at": last_seen
+                        - timedelta(minutes=random.randint(30, 180)),
+                    },
                 )
                 checkin_count += 1
 
@@ -330,6 +358,7 @@ async def seed_city(city_name: str):
         await db.rollback()
         print(f"❌ Error: {e}")
         import traceback
+
         traceback.print_exc()
         raise
     finally:
