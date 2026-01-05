@@ -165,8 +165,16 @@ class AutocompleteResponse(BaseModel):
     predictions: List[PlacePrediction]
 
 
-GOOGLE_PLACES_AUTOCOMPLETE_URL = "https://maps.googleapis.com/maps/api/place/autocomplete/json"
+GOOGLE_PLACES_AUTOCOMPLETE_URL = "https://places.googleapis.com/v1/places:autocomplete"
 GOOGLE_PLACES_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
+
+# Place types for nightlife/dining venues
+VENUE_TYPES = [
+    "restaurant",
+    "bar",
+    "cafe",
+    "night_club",
+]
 
 # SSL context for aiohttp requests to Google APIs
 def get_ssl_context():
@@ -240,9 +248,9 @@ async def places_autocomplete(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Google Places Autocomplete for venue search.
+    Google Places Autocomplete for venue search (bars, restaurants, cafes, clubs).
 
-    Returns place predictions with coordinates, distance, and photo.
+    Uses the new Places API with type filtering.
     Results are sorted by distance (closest first) when lat/lng provided.
 
     Example: /geocoding/places/autocomplete?query=hooters&lat=25.79&lng=-80.13
@@ -253,31 +261,40 @@ async def places_autocomplete(
             detail="Places API not configured. GOOGLE_MAPS_API_KEY required."
         )
 
-    params = {
-        "input": query,
-        "key": settings.GOOGLE_MAPS_API_KEY,
-        "types": "establishment",  # Focus on businesses/venues
+    # New Places API uses POST with JSON body
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": settings.GOOGLE_MAPS_API_KEY,
     }
 
-    # Add location bias - smaller radius = stronger preference for nearby results
+    body = {
+        "input": query,
+        "includedPrimaryTypes": VENUE_TYPES,
+    }
+
+    # Add location bias if coordinates provided
     if lat is not None and lng is not None:
-        params["location"] = f"{lat},{lng}"
-        params["radius"] = "2000"  # 2km - tight bias for strong local preference
+        body["locationBias"] = {
+            "circle": {
+                "center": {"latitude": lat, "longitude": lng},
+                "radius": 5000.0  # 5km bias
+            }
+        }
 
     try:
         ssl_ctx = get_ssl_context()
         async with aiohttp.ClientSession() as session:
-            # First, get autocomplete predictions
-            async with session.get(GOOGLE_PLACES_AUTOCOMPLETE_URL, params=params, ssl=ssl_ctx) as response:
+            async with session.post(GOOGLE_PLACES_AUTOCOMPLETE_URL, headers=headers, json=body, ssl=ssl_ctx) as response:
                 data = await response.json()
 
-                if data.get("status") not in ("OK", "ZERO_RESULTS"):
+                if response.status != 200:
+                    error_msg = data.get("error", {}).get("message", "Unknown error")
                     raise HTTPException(
                         status_code=502,
-                        detail=f"Places API error: {data.get('status')}"
+                        detail=f"Places API error: {error_msg}"
                     )
 
-                raw_predictions = data.get("predictions", [])
+                raw_predictions = data.get("suggestions", [])
 
                 if not raw_predictions:
                     return AutocompleteResponse(predictions=[])
@@ -285,27 +302,42 @@ async def places_autocomplete(
                 # Fetch details for all predictions in parallel
                 detail_tasks = [
                     fetch_place_details_for_autocomplete(
-                        session, pred["place_id"], ssl_ctx, settings.GOOGLE_MAPS_API_KEY
+                        session,
+                        pred.get("placePrediction", {}).get("placeId", ""),
+                        ssl_ctx,
+                        settings.GOOGLE_MAPS_API_KEY
                     )
                     for pred in raw_predictions
+                    if pred.get("placePrediction")
                 ]
                 details_results = await asyncio.gather(*detail_tasks)
 
                 # Build predictions with coordinates and distance
                 predictions = []
-                for pred, (place_lat, place_lng, photo_url) in zip(raw_predictions, details_results):
-                    structured = pred.get("structured_formatting", {})
+                detail_idx = 0
+                for pred in raw_predictions:
+                    place_pred = pred.get("placePrediction")
+                    if not place_pred:
+                        continue
+
+                    place_lat, place_lng, photo_url = details_results[detail_idx]
+                    detail_idx += 1
 
                     # Calculate distance if we have both user location and place location
                     distance_meters = None
                     if lat is not None and lng is not None and place_lat is not None and place_lng is not None:
                         distance_meters = haversine_distance_meters(lat, lng, place_lat, place_lng)
 
+                    # Extract structured text from new API format
+                    structured_format = place_pred.get("structuredFormat", {})
+                    main_text = structured_format.get("mainText", {}).get("text", "")
+                    secondary_text = structured_format.get("secondaryText", {}).get("text", "")
+
                     predictions.append(PlacePrediction(
-                        place_id=pred["place_id"],
-                        name=structured.get("main_text", pred.get("description", "")),
-                        address=structured.get("secondary_text", ""),
-                        full_description=pred.get("description", ""),
+                        place_id=place_pred.get("placeId", ""),
+                        name=main_text or place_pred.get("text", {}).get("text", ""),
+                        address=secondary_text,
+                        full_description=place_pred.get("text", {}).get("text", ""),
                         latitude=place_lat,
                         longitude=place_lng,
                         distance_meters=distance_meters,
