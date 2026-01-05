@@ -2,20 +2,28 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func
 from typing import List, Dict
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
 
 from db.database import create_async_session
 from db.models import Livestream
+from services.redis import get_redis
 
 router = APIRouter(tags=["websocket"])
 logger = logging.getLogger(__name__)
 
+REDIS_CHANNEL_BROADCAST = "ws:broadcast"
+REDIS_CHANNEL_USER = "ws:user:{user_id}"
+
 
 class ConnectionManager:
+    """WebSocket manager with Redis pub/sub for multi-instance support"""
+
     def __init__(self):
         self.active_connections: Dict[int, List[WebSocket]] = {}
+        self._subscriber_task: asyncio.Task | None = None
 
     async def connect(self, websocket: WebSocket, user_id: int):
         await websocket.accept()
@@ -25,72 +33,92 @@ class ConnectionManager:
 
     def disconnect(self, websocket: WebSocket, user_id: int):
         if user_id in self.active_connections:
-            self.active_connections[user_id].remove(websocket)
+            if websocket in self.active_connections[user_id]:
+                self.active_connections[user_id].remove(websocket)
             if not self.active_connections[user_id]:
                 del self.active_connections[user_id]
 
-    async def broadcast(self, message: dict):
-        """Broadcast to all connected clients"""
+    async def _send_local(self, message: dict, user_id: int | None = None):
+        """Send to local connections only"""
         dead_connections = []
-        for user_id, connections in self.active_connections.items():
+
+        if user_id is not None:
+            connections_to_send = [(user_id, self.active_connections.get(user_id, []))]
+        else:
+            connections_to_send = list(self.active_connections.items())
+
+        for uid, connections in connections_to_send:
             for connection in connections:
                 try:
                     await connection.send_json(message)
                 except Exception:
-                    dead_connections.append((user_id, connection))
+                    dead_connections.append((uid, connection))
 
-        # Clean up dead connections
-        for user_id, connection in dead_connections:
-            self.disconnect(connection, user_id)
+        for uid, connection in dead_connections:
+            self.disconnect(connection, uid)
+
+    async def broadcast(self, message: dict):
+        """Broadcast to all connected clients across all instances via Redis"""
+        try:
+            redis = await get_redis()
+            await redis.publish(REDIS_CHANNEL_BROADCAST, json.dumps(message))
+        except Exception as e:
+            logger.warning(f"Redis broadcast failed, falling back to local: {e}")
+            await self._send_local(message)
 
     async def send_to_user(self, user_id: int, message: dict):
-        """Send a message to a specific user"""
-        if user_id not in self.active_connections:
-            return False
+        """Send to specific user across all instances via Redis"""
+        try:
+            redis = await get_redis()
+            channel = REDIS_CHANNEL_USER.format(user_id=user_id)
+            await redis.publish(channel, json.dumps(message))
+            return True
+        except Exception as e:
+            logger.warning(f"Redis send_to_user failed, falling back to local: {e}")
+            await self._send_local(message, user_id)
+            return user_id in self.active_connections
 
-        dead_connections = []
-        for connection in self.active_connections[user_id]:
+    async def start_subscriber(self):
+        """Start Redis subscriber for cross-instance messages"""
+        if self._subscriber_task is not None:
+            return
+
+        self._subscriber_task = asyncio.create_task(self._subscribe_loop())
+
+    async def _subscribe_loop(self):
+        """Subscribe to Redis channels and dispatch to local connections"""
+        while True:
             try:
-                await connection.send_json(message)
-            except Exception:
-                dead_connections.append(connection)
+                redis = await get_redis()
+                pubsub = redis.pubsub()
 
-        for connection in dead_connections:
-            self.disconnect(connection, user_id)
+                await pubsub.subscribe(REDIS_CHANNEL_BROADCAST)
+                # Subscribe to user-specific channels for connected users
+                for user_id in self.active_connections.keys():
+                    await pubsub.subscribe(REDIS_CHANNEL_USER.format(user_id=user_id))
 
-        return True
+                async for msg in pubsub.listen():
+                    if msg["type"] != "message":
+                        continue
+
+                    try:
+                        data = json.loads(msg["data"])
+                        channel = msg["channel"]
+
+                        if channel == REDIS_CHANNEL_BROADCAST:
+                            await self._send_local(data)
+                        elif channel.startswith("ws:user:"):
+                            user_id = int(channel.split(":")[-1])
+                            await self._send_local(data, user_id)
+                    except Exception as e:
+                        logger.error(f"Error processing Redis message: {e}")
+
+            except Exception as e:
+                logger.error(f"Redis subscriber error, reconnecting: {e}")
+                await asyncio.sleep(1)
 
 
 manager = ConnectionManager()
-
-
-async def broadcast_location_update(location_id: str, latitude: float, longitude: float, area_name: str | None = None):
-    """
-    Broadcast anonymous location update to all connected clients
-
-    Called when a user updates their location to notify map viewers in real-time.
-    """
-    await manager.broadcast({
-        "type": "location_update",
-        "location_id": location_id,
-        "latitude": latitude,
-        "longitude": longitude,
-        "area_name": area_name,
-        "timestamp": datetime.utcnow().isoformat()
-    })
-
-
-async def broadcast_location_expired(location_id: str):
-    """
-    Broadcast that a location has expired (15 min timeout)
-
-    Tells clients to remove the marker from the map.
-    """
-    await manager.broadcast({
-        "type": "location_expired",
-        "location_id": location_id,
-        "timestamp": datetime.utcnow().isoformat()
-    })
 
 
 @router.websocket("/ws/notifications")

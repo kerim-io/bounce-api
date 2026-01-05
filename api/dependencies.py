@@ -1,13 +1,18 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from db.database import get_async_session
 from db.models import User
 from services.auth_service import decode_token
 
 security = HTTPBearer()
+
+# Rate limiter - uses client IP address for identification
+limiter = Limiter(key_func=get_remote_address)
 
 
 async def get_current_user(

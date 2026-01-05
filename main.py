@@ -1,12 +1,18 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from pathlib import Path
 import logging
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from db.database import create_db_and_tables
-from api.routes import auth, users, checkins, websocket, likes, geocoding, locations, bounces
+from api.routes import auth, users, checkins, websocket, likes, geocoding, bounces
+from api.routes.websocket import manager as ws_manager
+from api.dependencies import limiter
+from services.redis import close_redis
 from core.config import settings
 
 # Configure logging
@@ -25,7 +31,11 @@ logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)  # Reduce SQL q
 async def lifespan(app: FastAPI):
     # Initialize database
     await create_db_and_tables()
+    # Start WebSocket Redis subscriber
+    await ws_manager.start_subscriber()
     yield
+    # Cleanup
+    await close_redis()
 
 
 app = FastAPI(
@@ -34,6 +44,10 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# Rate limiting
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Add CORS middleware for WebSocket and HTTP connections
 # Configure based on environment (development vs production)
@@ -60,7 +74,6 @@ app.include_router(checkins.router)
 app.include_router(websocket.router)
 app.include_router(likes.router)
 app.include_router(geocoding.router)
-app.include_router(locations.router)
 app.include_router(bounces.router)
 
 

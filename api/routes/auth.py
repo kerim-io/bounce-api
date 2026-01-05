@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -10,6 +10,7 @@ from db.models import User, RefreshToken
 from services.auth_service import create_access_token, create_refresh_token, decode_token
 from services.apple_auth import verify_apple_token
 from core.config import settings
+from api.dependencies import limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -43,23 +44,25 @@ class RefreshTokenRequest(BaseModel):
 
 
 @router.post("/apple", response_model=AuthResponse)
+@limiter.limit("10/minute")
 async def apple_signin(
-    request: AppleAuthRequest,
+    request: Request,
+    auth_request: AppleAuthRequest,
     db: AsyncSession = Depends(get_async_session)
 ):
     """Sign in with Apple - validates code with Apple servers"""
     # Log what we received from iOS
     print(f"📱 Apple Auth Request:")
-    print(f"   given_name: {request.given_name}")
-    print(f"   family_name: {request.family_name}")
-    print(f"   email: {request.email}")
+    print(f"   given_name: {auth_request.given_name}")
+    print(f"   family_name: {auth_request.family_name}")
+    print(f"   email: {auth_request.email}")
 
     try:
         # Verify Apple token
-        apple_data = await verify_apple_token(request.code, request.redirect_uri)
+        apple_data = await verify_apple_token(auth_request.code, auth_request.redirect_uri)
         apple_user_id = apple_data["user_id"]
         # Prefer email from iOS request (Apple sends it), fallback to token email
-        email = request.email or apple_data.get("email")
+        email = auth_request.email or apple_data.get("email")
 
         # Check if user exists
         result = await db.execute(
@@ -73,8 +76,8 @@ async def apple_signin(
                 apple_user_id=apple_user_id,
                 email=email,
                 username=email.split("@")[0] if email else f"user_{apple_user_id[:8]}",
-                first_name=request.given_name,
-                last_name=request.family_name,
+                first_name=auth_request.given_name,
+                last_name=auth_request.family_name,
                 is_active=True
             )
             db.add(user)
@@ -83,14 +86,14 @@ async def apple_signin(
         else:
             # Update existing user with name if provided and not already set
             updated = False
-            if request.given_name and not user.first_name:
-                user.first_name = request.given_name
+            if auth_request.given_name and not user.first_name:
+                user.first_name = auth_request.given_name
                 updated = True
-            if request.family_name and not user.last_name:
-                user.last_name = request.family_name
+            if auth_request.family_name and not user.last_name:
+                user.last_name = auth_request.family_name
                 updated = True
-            if request.email and not user.email:
-                user.email = request.email
+            if auth_request.email and not user.email:
+                user.email = auth_request.email
                 updated = True
             if updated:
                 await db.commit()
@@ -135,19 +138,21 @@ async def apple_signin(
 
 
 @router.post("/passcode", response_model=AuthResponse)
+@limiter.limit("10/minute")
 async def passcode_auth(
-    request: PasscodeAuthRequest,
+    request: Request,
+    auth_request: PasscodeAuthRequest,
     db: AsyncSession = Depends(get_async_session)
 ):
     """Auth with passcode fallback (ARTBASEL2024)"""
-    if request.passcode != PASSCODE:
+    if auth_request.passcode != PASSCODE:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid passcode"
         )
 
     # Create/get guest user
-    username = request.username or f"guest_{datetime.utcnow().timestamp()}"
+    username = auth_request.username or f"guest_{datetime.utcnow().timestamp()}"
     guest_id = f"passcode_{username}"
 
     result = await db.execute(

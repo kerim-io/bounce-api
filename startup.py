@@ -3,18 +3,13 @@ Startup script for Railway deployment
 Handles:
 - Apple Sign-In private key decoding from base64 env var
 - Directory creation
-- APScheduler setup for background cleanup job
 - Uvicorn server launch
 """
 
 import os
 import sys
 import base64
-import asyncio
 from pathlib import Path
-
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
 
 
 def setup_directories():
@@ -61,30 +56,6 @@ def setup_apple_private_key():
         return False
 
 
-def start_cleanup_scheduler():
-    """
-    Start APScheduler for background location cleanup job
-    Runs every 5 minutes to remove expired anonymous locations
-    """
-    from services.location_cleanup import cleanup_expired_locations
-
-    scheduler = AsyncIOScheduler()
-
-    # Schedule cleanup job every 5 minutes
-    scheduler.add_job(
-        cleanup_expired_locations,
-        trigger=IntervalTrigger(minutes=5),
-        id='location_cleanup',
-        name='Cleanup expired anonymous locations',
-        replace_existing=True
-    )
-
-    scheduler.start()
-    print("✓ Background cleanup scheduler started (runs every 5 minutes)")
-
-    return scheduler
-
-
 def main():
     """Main startup sequence"""
     print("=" * 60)
@@ -92,19 +63,15 @@ def main():
     print("=" * 60)
 
     # Step 1: Create directories
-    print("\n[1/4] Setting up directories...")
+    print("\n[1/3] Setting up directories...")
     setup_directories()
 
     # Step 2: Decode Apple private key
-    print("\n[2/4] Setting up Apple Sign-In private key...")
-    apple_key_success = setup_apple_private_key()
+    print("\n[2/3] Setting up Apple Sign-In private key...")
+    setup_apple_private_key()
 
-    # Step 3: Start background scheduler
-    print("\n[3/4] Starting background cleanup scheduler...")
-    scheduler = start_cleanup_scheduler()
-
-    # Step 4: Launch uvicorn
-    print("\n[4/4] Starting uvicorn server...")
+    # Step 3: Launch uvicorn
+    print("\n[3/3] Starting uvicorn server...")
     print("=" * 60)
 
     # Get port from environment (Railway provides this)
@@ -123,7 +90,6 @@ def main():
         )
     except KeyboardInterrupt:
         print("\n⏹️  Shutting down...")
-        scheduler.shutdown()
         sys.exit(0)
 
 

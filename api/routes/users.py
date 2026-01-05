@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, or_, func
 from pydantic import BaseModel
@@ -13,10 +13,10 @@ from datetime import datetime
 from math import radians, cos, sin, asin, sqrt
 
 from db.database import get_async_session
-from db.models import User, Follow, Post, Like, CheckIn, RefreshToken, AnonymousLocation, Livestream
-from api.dependencies import get_current_user
+from db.models import User, Follow, Post, Like, CheckIn, RefreshToken, Livestream
+from api.dependencies import get_current_user, limiter
 from core.config import settings
-from api.routes.websocket import broadcast_location_update, manager as ws_manager
+from api.routes.websocket import manager as ws_manager
 from services.geofence import haversine_distance
 import re
 
@@ -600,7 +600,9 @@ async def lookup_instagram_profile(
 
 
 @router.post("/me/profile-picture")
+@limiter.limit("5/minute")
 async def upload_profile_picture(
+    request: Request,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session)
@@ -930,40 +932,7 @@ async def update_location(
     can_post = distance_km <= basel_radius_km
     current_user.can_post = can_post
 
-    # Create or update anonymous location for map
-    # Generate consistent UUID for this user's anonymous location
-    location_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, f"bitbasel-user-{current_user.id}")
-
-    # Check if anonymous location already exists
-    result = await db.execute(
-        select(AnonymousLocation).where(AnonymousLocation.location_id == location_uuid)
-    )
-    anon_location = result.scalar_one_or_none()
-
-    if anon_location:
-        # Update existing location
-        anon_location.latitude = location.latitude
-        anon_location.longitude = location.longitude
-        anon_location.last_updated = datetime.utcnow()
-    else:
-        # Create new anonymous location
-        anon_location = AnonymousLocation(
-            location_id=location_uuid,
-            latitude=location.latitude,
-            longitude=location.longitude
-        )
-        db.add(anon_location)
-
     await db.commit()
-
-    # Broadcast location update to all WebSocket clients for real-time map
-    await broadcast_location_update(
-        location_id=str(location_uuid),
-        latitude=location.latitude,
-        longitude=location.longitude
-    )
-
-    # NOTE: Auto-checkin removed - client now calls GET /bounces/nearby and chooses
 
     if can_post:
         return LocationResponse(

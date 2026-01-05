@@ -40,4 +40,7 @@ class Settings:
     # Google Maps API
     GOOGLE_MAPS_API_KEY: str = os.getenv("GOOGLE_MAPS_API_KEY", "")
 
+    # Redis
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
+
 settings = Settings()
