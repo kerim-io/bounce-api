@@ -84,4 +84,17 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    from services.redis import get_redis
+
+    redis_ok = False
+    try:
+        redis = await get_redis()
+        await redis.ping()
+        redis_ok = True
+    except Exception:
+        pass
+
+    return {
+        "status": "healthy",
+        "redis": "connected" if redis_ok else "disconnected"
+    }
