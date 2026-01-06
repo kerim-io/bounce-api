@@ -168,14 +168,13 @@ class AutocompleteResponse(BaseModel):
 GOOGLE_PLACES_AUTOCOMPLETE_URL = "https://places.googleapis.com/v1/places:autocomplete"
 GOOGLE_PLACES_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 
-# Place types for nightlife/dining venues
+# Place types for nightlife/dining venues (max 5 allowed)
 VENUE_TYPES = [
     "restaurant",
     "bar",
     "cafe",
     "night_club",
     "hotel",
-    "lodging",
 ]
 
 # SSL context for aiohttp requests to Google APIs
