@@ -11,6 +11,7 @@ from db.models import CheckIn, User, Place, Bounce
 from api.dependencies import get_current_user
 from services.geofence import is_in_basel_area
 from services.places.service import get_place_with_photos
+from api.routes.websocket import manager
 
 router = APIRouter(prefix="/checkins", tags=["checkins"])
 
@@ -347,6 +348,18 @@ async def checkin_to_venue(
     db.add(checkin)
     await db.commit()
     await db.refresh(checkin)
+
+    # Broadcast check-in to all connected clients
+    await manager.broadcast({
+        "type": "venue_checkin",
+        "place_id": place_id,
+        "venue_name": place.name,
+        "latitude": place.latitude,
+        "longitude": place.longitude,
+        "user_id": current_user.id,
+        "nickname": current_user.nickname,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
 
     return VenueCheckInResponse(
         id=checkin.id,
