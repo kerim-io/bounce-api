@@ -169,13 +169,14 @@ class AutocompleteResponse(BaseModel):
 GOOGLE_PLACES_AUTOCOMPLETE_URL = "https://places.googleapis.com/v1/places:autocomplete"
 GOOGLE_PLACES_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 
-# Place types for nightlife/dining venues (max 5 allowed)
+# Place types for venues
 VENUE_TYPES = [
     "restaurant",
     "bar",
     "cafe",
     "night_club",
     "hotel",
+    "gym",
 ]
 
 # SSL context for aiohttp requests to Google APIs
@@ -366,8 +367,18 @@ async def places_autocomplete(
         raise HTTPException(status_code=502, detail=f"Failed to reach Places API: {str(e)}")
 
 
-GOOGLE_PLACES_NEARBY_URL = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+GOOGLE_PLACES_NEARBY_URL = "https://places.googleapis.com/v1/places:searchNearby"
 GOOGLE_PLACES_PHOTO_URL = "https://maps.googleapis.com/maps/api/place/photo"
+
+# Venue types for nearby search
+NEARBY_VENUE_TYPES = [
+    "restaurant",
+    "bar",
+    "cafe",
+    "night_club",
+    "hotel",
+    "gym",
+]
 
 
 @router.get("/places/nearby", response_model=AutocompleteResponse)
@@ -378,12 +389,12 @@ async def places_nearby(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Get nearby places sorted by distance.
+    Get nearby venues (bars, restaurants, cafes, clubs, hotels) sorted by distance.
 
-    Returns establishments near the user's location, sorted closest first.
-    Used for pre-populating search results before user types.
+    Uses the new Google Places API with venue type filtering.
+    Returns closest venues first.
 
-    Example: /geocoding/places/nearby?lat=51.38&lng=0.07&radius=1000
+    Example: /geocoding/places/nearby?lat=25.79&lng=-80.13&radius=1000
     """
     # Round coords to ~100m precision for cache efficiency
     lat_rounded = round(lat, 3)
@@ -399,67 +410,90 @@ async def places_nearby(
             detail="Places API not configured. GOOGLE_MAPS_API_KEY required."
         )
 
-    params = {
-        "location": f"{lat},{lng}",
-        "radius": str(radius),
-        "type": "establishment",
-        "rankby": "prominence",  # Gets popular places, we'll sort by distance
-        "key": settings.GOOGLE_MAPS_API_KEY,
+    # New Places API uses POST with JSON body
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": settings.GOOGLE_MAPS_API_KEY,
+        "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.photos",
+    }
+
+    body = {
+        "includedTypes": NEARBY_VENUE_TYPES,
+        "maxResultCount": 20,
+        "rankPreference": "DISTANCE",
+        "locationRestriction": {
+            "circle": {
+                "center": {"latitude": lat, "longitude": lng},
+                "radius": float(radius)
+            }
+        }
     }
 
     try:
         ssl_ctx = get_ssl_context()
         async with aiohttp.ClientSession() as session:
-            async with session.get(GOOGLE_PLACES_NEARBY_URL, params=params, ssl=ssl_ctx) as response:
+            async with session.post(GOOGLE_PLACES_NEARBY_URL, headers=headers, json=body, ssl=ssl_ctx) as response:
                 data = await response.json()
 
-                if data.get("status") not in ("OK", "ZERO_RESULTS"):
+                if response.status != 200:
+                    error_msg = data.get("error", {}).get("message", "Unknown error")
                     raise HTTPException(
                         status_code=502,
-                        detail=f"Places API error: {data.get('status')}"
+                        detail=f"Places API error: {error_msg}"
                     )
 
-                raw_results = data.get("results", [])
+                raw_results = data.get("places", [])
 
                 if not raw_results:
                     return AutocompleteResponse(predictions=[])
 
                 # Build predictions with distance
                 predictions = []
-                for place in raw_results[:15]:  # Limit to 15 results
-                    location = place.get("geometry", {}).get("location", {})
-                    place_lat = location.get("lat")
-                    place_lng = location.get("lng")
+                for place in raw_results:
+                    location = place.get("location", {})
+                    place_lat = location.get("latitude")
+                    place_lng = location.get("longitude")
 
                     # Calculate distance
                     distance_meters = None
                     if place_lat and place_lng:
                         distance_meters = haversine_distance_meters(lat, lng, place_lat, place_lng)
 
-                    # Get photo URL if available
+                    # Get photo URL if available (new API format)
                     photo_url = None
                     photos = place.get("photos", [])
                     if photos:
-                        photo_ref = photos[0].get("photo_reference")
-                        if photo_ref:
-                            photo_url = (
-                                f"https://maps.googleapis.com/maps/api/place/photo"
-                                f"?maxwidth=100&photo_reference={photo_ref}"
-                                f"&key={settings.GOOGLE_MAPS_API_KEY}"
-                            )
+                        # New API returns photo resource name, need to fetch separately or use legacy photo endpoint
+                        photo_name = photos[0].get("name", "")
+                        if photo_name:
+                            # Extract photo reference from resource name and use legacy photo URL
+                            # Format: places/{place_id}/photos/{photo_reference}
+                            parts = photo_name.split("/")
+                            if len(parts) >= 4:
+                                photo_ref = parts[-1]
+                                photo_url = (
+                                    f"https://places.googleapis.com/v1/{photo_name}/media"
+                                    f"?maxWidthPx=100"
+                                    f"&key={settings.GOOGLE_MAPS_API_KEY}"
+                                )
+
+                    # Extract place_id from resource name (format: places/{place_id})
+                    place_id = place.get("id", "")
+                    display_name = place.get("displayName", {}).get("text", "")
+                    address = place.get("formattedAddress", "")
 
                     predictions.append(PlacePrediction(
-                        place_id=place.get("place_id", ""),
-                        name=place.get("name", ""),
-                        address=place.get("vicinity", ""),
-                        full_description=f"{place.get('name', '')} - {place.get('vicinity', '')}",
+                        place_id=place_id,
+                        name=display_name,
+                        address=address,
+                        full_description=f"{display_name} - {address}" if address else display_name,
                         latitude=place_lat,
                         longitude=place_lng,
                         distance_meters=distance_meters,
                         photo_url=photo_url
                     ))
 
-                # Sort by distance (closest first)
+                # Already sorted by distance from API, but ensure it
                 predictions.sort(key=lambda p: p.distance_meters if p.distance_meters is not None else float('inf'))
 
                 # Cache for 1 hour (nearby places don't change often)
