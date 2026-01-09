@@ -125,6 +125,9 @@ class PublicProfileResponse(BaseModel):
     email: Optional[str] = None
     profile_picture: Optional[str]
     has_profile: bool
+    # Instagram social
+    instagram_handle: Optional[str] = None
+    instagram_profile_pic: Optional[str] = None
     # Stats
     posts_count: int
     followers_count: int
@@ -1002,6 +1005,7 @@ async def get_user_profile(
         email=user.email if (user.email_visible and can_see_private) else None,
         profile_picture=user.profile_picture or user.instagram_profile_pic,
         instagram_handle=user.instagram_handle,
+        instagram_profile_pic=user.instagram_profile_pic,
         has_profile=user.has_profile,
         posts_count=posts_count,
         followers_count=followers_count,
