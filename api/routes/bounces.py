@@ -724,6 +724,54 @@ async def invite_to_bounce(
     return {"added": added, "total": len(existing_user_ids) + added}
 
 
+@router.delete("/{bounce_id}/invite/{user_id}")
+async def remove_invite(
+    bounce_id: int,
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Remove a user's invite from a bounce.
+
+    Allowed by:
+    - The bounce creator (can remove anyone)
+    - The invited user themselves (declining the invite)
+    """
+    result = await db.execute(
+        select(Bounce).where(Bounce.id == bounce_id)
+    )
+    bounce = result.scalar_one_or_none()
+
+    if not bounce:
+        raise HTTPException(status_code=404, detail="Bounce not found")
+
+    is_creator = bounce.creator_id == current_user.id
+    is_self = user_id == current_user.id
+
+    if not (is_creator or is_self):
+        raise HTTPException(status_code=403, detail="Not authorized to remove this invite")
+
+    # Find and delete the invite
+    invite_result = await db.execute(
+        select(BounceInvite).where(
+            BounceInvite.bounce_id == bounce_id,
+            BounceInvite.user_id == user_id
+        )
+    )
+    invite = invite_result.scalar_one_or_none()
+
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found")
+
+    await db.delete(invite)
+    await db.commit()
+
+    logger.info(f"Invite removed: bounce {bounce_id}, user {user_id}, by {current_user.id}")
+
+    return {"success": True, "message": "Invite removed"}
+
+
 class InvitedUserInfo(BaseModel):
     user_id: int
     nickname: Optional[str]
