@@ -18,6 +18,7 @@ from api.dependencies import get_current_user, limiter
 from core.config import settings
 from api.routes.websocket import manager as ws_manager
 from services.geofence import haversine_distance
+from services.cache import cache_get, cache_set, cache_delete
 import re
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -191,23 +192,38 @@ async def get_profile(
     """Get current user full profile with stats"""
     from sqlalchemy import func
 
-    # Get posts count
-    posts_result = await db.execute(
-        select(func.count(Post.id)).where(Post.user_id == current_user.id)
-    )
-    posts_count = posts_result.scalar() or 0
+    cache_key = f"user_stats:{current_user.id}"
+    cached_stats = await cache_get(cache_key)
 
-    # Get followers count (users following this user)
-    followers_result = await db.execute(
-        select(func.count(Follow.id)).where(Follow.following_id == current_user.id)
-    )
-    followers_count = followers_result.scalar() or 0
+    if cached_stats:
+        posts_count = cached_stats["posts"]
+        followers_count = cached_stats["followers"]
+        following_count = cached_stats["following"]
+    else:
+        # Get posts count
+        posts_result = await db.execute(
+            select(func.count(Post.id)).where(Post.user_id == current_user.id)
+        )
+        posts_count = posts_result.scalar() or 0
 
-    # Get following count (users this user follows)
-    following_result = await db.execute(
-        select(func.count(Follow.id)).where(Follow.follower_id == current_user.id)
-    )
-    following_count = following_result.scalar() or 0
+        # Get followers count (users following this user)
+        followers_result = await db.execute(
+            select(func.count(Follow.id)).where(Follow.following_id == current_user.id)
+        )
+        followers_count = followers_result.scalar() or 0
+
+        # Get following count (users this user follows)
+        following_result = await db.execute(
+            select(func.count(Follow.id)).where(Follow.follower_id == current_user.id)
+        )
+        following_count = following_result.scalar() or 0
+
+        # Cache stats for 5 minutes
+        await cache_set(cache_key, {
+            "posts": posts_count,
+            "followers": followers_count,
+            "following": following_count
+        }, ttl=300)
 
     return ProfileResponse(
         id=current_user.id,
@@ -682,6 +698,10 @@ async def follow_user(
     db.add(follow)
     await db.commit()
 
+    # Invalidate cache for both users' stats
+    await cache_delete(f"user_stats:{user_id}")
+    await cache_delete(f"user_stats:{current_user.id}")
+
     # Send push notification
     from services.apns_service import get_apns_service, NotificationPayload, NotificationType
 
@@ -732,6 +752,10 @@ async def unfollow_user(
 
     await db.delete(follow)
     await db.commit()
+
+    # Invalidate cache for both users' stats
+    await cache_delete(f"user_stats:{user_id}")
+    await cache_delete(f"user_stats:{current_user.id}")
 
     return {"status": "success"}
 
@@ -931,23 +955,39 @@ async def get_user_profile(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Get posts count
-    posts_result = await db.execute(
-        select(func.count(Post.id)).where(Post.user_id == user_id)
-    )
-    posts_count = posts_result.scalar() or 0
+    # Try to get cached stats
+    cache_key = f"user_stats:{user_id}"
+    cached_stats = await cache_get(cache_key)
 
-    # Get followers count (users following this user)
-    followers_result = await db.execute(
-        select(func.count(Follow.id)).where(Follow.following_id == user_id)
-    )
-    followers_count = followers_result.scalar() or 0
+    if cached_stats:
+        posts_count = cached_stats["posts"]
+        followers_count = cached_stats["followers"]
+        following_count = cached_stats["following"]
+    else:
+        # Get posts count
+        posts_result = await db.execute(
+            select(func.count(Post.id)).where(Post.user_id == user_id)
+        )
+        posts_count = posts_result.scalar() or 0
 
-    # Get following count (users this user follows)
-    following_result = await db.execute(
-        select(func.count(Follow.id)).where(Follow.follower_id == user_id)
-    )
-    following_count = following_result.scalar() or 0
+        # Get followers count (users following this user)
+        followers_result = await db.execute(
+            select(func.count(Follow.id)).where(Follow.following_id == user_id)
+        )
+        followers_count = followers_result.scalar() or 0
+
+        # Get following count (users this user follows)
+        following_result = await db.execute(
+            select(func.count(Follow.id)).where(Follow.follower_id == user_id)
+        )
+        following_count = following_result.scalar() or 0
+
+        # Cache stats for 5 minutes
+        await cache_set(cache_key, {
+            "posts": posts_count,
+            "followers": followers_count,
+            "following": following_count
+        }, ttl=300)
 
     # Check if current user follows this user (and get close friend status)
     follow_check = await db.execute(

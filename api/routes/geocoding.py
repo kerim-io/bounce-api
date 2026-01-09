@@ -12,6 +12,7 @@ from services.geocoding import GeocodingService, LocationResult, ReverseGeocodeR
 from api.dependencies import get_current_user
 from db.models import User
 from core.config import settings
+from services.cache import cache_get, cache_set
 
 router = APIRouter(prefix="/geocoding", tags=["geocoding"])
 
@@ -256,6 +257,14 @@ async def places_autocomplete(
 
     Example: /geocoding/places/autocomplete?query=hooters&lat=25.79&lng=-80.13
     """
+    # Cache by query + rounded location (~1km precision for location bias)
+    lat_rounded = round(lat, 2) if lat else "none"
+    lng_rounded = round(lng, 2) if lng else "none"
+    cache_key = f"places_autocomplete:{query.lower()}:{lat_rounded}:{lng_rounded}"
+    cached = await cache_get(cache_key)
+    if cached:
+        return AutocompleteResponse(predictions=[PlacePrediction(**p) for p in cached])
+
     if not settings.GOOGLE_MAPS_API_KEY:
         raise HTTPException(
             status_code=503,
@@ -348,6 +357,9 @@ async def places_autocomplete(
                 # Sort by distance (closest first) if distances are available
                 predictions.sort(key=lambda p: p.distance_meters if p.distance_meters is not None else float('inf'))
 
+                # Cache for 1 hour
+                await cache_set(cache_key, [p.model_dump() for p in predictions], ttl=3600)
+
                 return AutocompleteResponse(predictions=predictions)
 
     except aiohttp.ClientError as e:
@@ -373,6 +385,14 @@ async def places_nearby(
 
     Example: /geocoding/places/nearby?lat=51.38&lng=0.07&radius=1000
     """
+    # Round coords to ~100m precision for cache efficiency
+    lat_rounded = round(lat, 3)
+    lng_rounded = round(lng, 3)
+    cache_key = f"places_nearby:{lat_rounded}:{lng_rounded}:{radius}"
+    cached = await cache_get(cache_key)
+    if cached:
+        return AutocompleteResponse(predictions=[PlacePrediction(**p) for p in cached])
+
     if not settings.GOOGLE_MAPS_API_KEY:
         raise HTTPException(
             status_code=503,
@@ -442,6 +462,9 @@ async def places_nearby(
                 # Sort by distance (closest first)
                 predictions.sort(key=lambda p: p.distance_meters if p.distance_meters is not None else float('inf'))
 
+                # Cache for 1 hour (nearby places don't change often)
+                await cache_set(cache_key, [p.model_dump() for p in predictions], ttl=3600)
+
                 return AutocompleteResponse(predictions=predictions)
 
     except aiohttp.ClientError as e:
@@ -460,6 +483,12 @@ async def get_place_details(
 
     Example: /geocoding/places/details/ChIJN1t_tDeuEmsRUsoyG83frY4
     """
+    # Check cache first (place details rarely change)
+    cache_key = f"place_details:{place_id}"
+    cached = await cache_get(cache_key)
+    if cached:
+        return PlaceDetails(**cached)
+
     if not settings.GOOGLE_MAPS_API_KEY:
         raise HTTPException(
             status_code=503,
@@ -504,7 +533,7 @@ async def get_place_details(
                             height=photo.get("height")
                         ))
 
-                return PlaceDetails(
+                place_details = PlaceDetails(
                     place_id=place_id,
                     name=result.get("name", ""),
                     address=result.get("formatted_address", ""),
@@ -513,6 +542,11 @@ async def get_place_details(
                     types=result.get("types", []),
                     photos=photos
                 )
+
+                # Cache for 24 hours (place details rarely change)
+                await cache_set(cache_key, place_details.model_dump(), ttl=86400)
+
+                return place_details
 
     except aiohttp.ClientError as e:
         raise HTTPException(status_code=502, detail=f"Failed to reach Places API: {str(e)}")

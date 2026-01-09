@@ -13,6 +13,7 @@ from services.geofence import haversine_distance
 from services.places import get_place_with_photos
 from api.routes.websocket import manager
 from services.apns_service import get_apns_service, NotificationPayload, NotificationType
+from services.cache import cache_get, cache_set, cache_delete
 
 router = APIRouter(prefix="/bounces", tags=["bounces"])
 logger = logging.getLogger(__name__)

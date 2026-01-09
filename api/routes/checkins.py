@@ -13,6 +13,7 @@ from services.geofence import is_in_basel_area
 from services.places.service import get_place_with_photos
 from api.routes.websocket import manager
 from services.apns_service import get_apns_service, NotificationPayload, NotificationType
+from services.cache import cache_get, cache_set, cache_delete
 import logging
 
 logger = logging.getLogger(__name__)
@@ -335,8 +336,15 @@ async def checkin_to_venue(
             )
         )
     )
+    old_place_ids = []
     for old_checkin in result.scalars().all():
         old_checkin.is_active = False
+        if old_checkin.place_id:
+            old_place_ids.append(old_checkin.place_id)
+
+    # Invalidate cache for old venues
+    for old_place_id in old_place_ids:
+        await cache_delete(f"venue_count:{old_place_id}")
 
     # Create new check-in
     checkin = CheckIn(
@@ -352,6 +360,9 @@ async def checkin_to_venue(
     db.add(checkin)
     await db.commit()
     await db.refresh(checkin)
+
+    # Invalidate venue count cache
+    await cache_delete(f"venue_count:{place_id}")
 
     # Broadcast check-in to all connected clients
     await manager.broadcast({
@@ -452,6 +463,15 @@ async def get_venue_checkin_count(
     """
     Get count of people checked in at venue (public, no auth required).
     """
+    cache_key = f"venue_count:{place_id}"
+    cached_count = await cache_get(cache_key)
+
+    if cached_count is not None:
+        return VenueCheckInCountResponse(
+            place_id=place_id,
+            count=cached_count
+        )
+
     expiry_time = datetime.now(timezone.utc) - timedelta(hours=CHECKIN_EXPIRY_HOURS)
 
     result = await db.execute(
@@ -464,6 +484,9 @@ async def get_venue_checkin_count(
         )
     )
     count = result.scalar() or 0
+
+    # Cache for 2 minutes
+    await cache_set(cache_key, count, ttl=120)
 
     return VenueCheckInCountResponse(
         place_id=place_id,
@@ -563,6 +586,9 @@ async def checkout_from_venue(
 
     checkin.is_active = False
     await db.commit()
+
+    # Invalidate venue count cache
+    await cache_delete(f"venue_count:{place_id}")
 
     # Notify users at the same venue who follow the current user
     expiry_time = datetime.now(timezone.utc) - timedelta(hours=CHECKIN_EXPIRY_HOURS)
