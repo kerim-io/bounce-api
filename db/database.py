@@ -74,6 +74,10 @@ async def run_migrations():
         "CREATE INDEX IF NOT EXISTS idx_checkins_active ON check_ins(is_active) WHERE is_active = true",
         # Follows table - close friend feature
         "ALTER TABLE follows ADD COLUMN IF NOT EXISTS is_close_friend BOOLEAN DEFAULT FALSE",
+        # Performance indexes for high-traffic queries
+        "CREATE INDEX IF NOT EXISTS idx_follows_follower_following ON follows(follower_id, following_id)",
+        "CREATE INDEX IF NOT EXISTS idx_posts_user_created ON posts(user_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_device_tokens_user_active ON device_tokens(user_id, is_active) WHERE is_active = true",
     ]
 
     engine = get_engine()
