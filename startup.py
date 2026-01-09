@@ -30,10 +30,10 @@ def setup_apple_private_key():
     Decode Apple Sign-In private key from base64 environment variable
     and write to keys/5Y3L2S8R8R.p8
     """
-    apple_key_base64 = os.getenv("APPLE_PRIVATE_KEY_BASE64")
+    apple_key_base64 = os.getenv("APPLE_KEY_BASE64") or os.getenv("APPLE_PRIVATE_KEY_BASE64")
 
     if not apple_key_base64:
-        print("⚠️  WARNING: APPLE_PRIVATE_KEY_BASE64 not found in environment")
+        print("⚠️  WARNING: APPLE_KEY_BASE64 not found in environment")
         print("⚠️  Apple Sign-In authentication will not work!")
         return False
 

@@ -72,6 +72,8 @@ async def run_migrations():
         "CREATE INDEX IF NOT EXISTS idx_checkins_place_id ON check_ins(place_id)",
         "CREATE INDEX IF NOT EXISTS idx_checkins_last_seen ON check_ins(last_seen_at)",
         "CREATE INDEX IF NOT EXISTS idx_checkins_active ON check_ins(is_active) WHERE is_active = true",
+        # Follows table - close friend feature
+        "ALTER TABLE follows ADD COLUMN IF NOT EXISTS is_close_friend BOOLEAN DEFAULT FALSE",
     ]
 
     engine = get_engine()
