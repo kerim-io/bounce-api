@@ -7,11 +7,14 @@ from datetime import datetime, timezone, timedelta
 from math import radians, sin, cos, sqrt, atan2
 
 from db.database import get_async_session
-from db.models import CheckIn, User, Place, Bounce
+from db.models import CheckIn, User, Place, Bounce, Follow
 from api.dependencies import get_current_user
 from services.geofence import is_in_basel_area
 from services.places.service import get_place_with_photos
 from api.routes.websocket import manager
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/checkins", tags=["checkins"])
 
@@ -361,6 +364,75 @@ async def checkin_to_venue(
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
 
+    # Send notifications to users at the same venue who follow the current user
+    expiry_time = datetime.now(timezone.utc) - timedelta(hours=CHECKIN_EXPIRY_HOURS)
+
+    # Get users who are checked into the same venue AND follow the current user
+    same_venue_followers_result = await db.execute(
+        select(User, CheckIn).join(
+            CheckIn, CheckIn.user_id == User.id
+        ).join(
+            Follow, and_(
+                Follow.follower_id == User.id,
+                Follow.following_id == current_user.id
+            )
+        ).where(
+            and_(
+                CheckIn.place_id == place_id,
+                CheckIn.is_active == True,
+                CheckIn.last_seen_at >= expiry_time,
+                User.id != current_user.id
+            )
+        )
+    )
+
+    actor_info = {
+        "user_id": current_user.id,
+        "nickname": current_user.nickname,
+        "profile_picture": current_user.profile_picture or current_user.instagram_profile_pic
+    }
+
+    venue_info = {
+        "place_id": place_id,
+        "venue_name": place.name,
+        "latitude": place.latitude,
+        "longitude": place.longitude
+    }
+
+    # Notify users at the same venue
+    for user, _ in same_venue_followers_result.all():
+        notification_payload = {
+            "type": "notification",
+            "notification_type": "friend_at_venue",
+            "message": f"{current_user.nickname} just arrived at {place.name}",
+            "actor": actor_info,
+            "venue": venue_info
+        }
+        logger.info(f"Sending friend_at_venue notification to user {user.id}")
+        await manager.send_to_user(user.id, notification_payload)
+
+    # Send notifications to users who have the current user marked as a close friend
+    close_friend_followers_result = await db.execute(
+        select(User).join(
+            Follow, and_(
+                Follow.follower_id == User.id,
+                Follow.following_id == current_user.id,
+                Follow.is_close_friend == True
+            )
+        ).where(User.id != current_user.id)
+    )
+
+    for user in close_friend_followers_result.scalars().all():
+        notification_payload = {
+            "type": "notification",
+            "notification_type": "close_friend_checkin",
+            "message": f"{current_user.nickname} checked into {place.name}",
+            "actor": actor_info,
+            "venue": venue_info
+        }
+        logger.info(f"Sending close_friend_checkin notification to user {user.id}")
+        await manager.send_to_user(user.id, notification_payload)
+
     return VenueCheckInResponse(
         id=checkin.id,
         user_id=checkin.user_id,
@@ -481,7 +553,68 @@ async def checkout_from_venue(
     if not checkin:
         raise HTTPException(status_code=404, detail="No active check-in found at this venue")
 
+    # Get venue name before deactivating
+    place_result = await db.execute(
+        select(Place).where(Place.place_id == place_id)
+    )
+    place = place_result.scalar_one_or_none()
+    venue_name = place.name if place else checkin.location_name
+
     checkin.is_active = False
     await db.commit()
+
+    # Notify users at the same venue who follow the current user
+    expiry_time = datetime.now(timezone.utc) - timedelta(hours=CHECKIN_EXPIRY_HOURS)
+
+    same_venue_followers_result = await db.execute(
+        select(User, CheckIn).join(
+            CheckIn, CheckIn.user_id == User.id
+        ).join(
+            Follow, and_(
+                Follow.follower_id == User.id,
+                Follow.following_id == current_user.id
+            )
+        ).where(
+            and_(
+                CheckIn.place_id == place_id,
+                CheckIn.is_active == True,
+                CheckIn.last_seen_at >= expiry_time,
+                User.id != current_user.id
+            )
+        )
+    )
+
+    actor_info = {
+        "user_id": current_user.id,
+        "nickname": current_user.nickname,
+        "profile_picture": current_user.profile_picture or current_user.instagram_profile_pic
+    }
+
+    venue_info = {
+        "place_id": place_id,
+        "venue_name": venue_name,
+        "latitude": place.latitude if place else None,
+        "longitude": place.longitude if place else None
+    }
+
+    for user, _ in same_venue_followers_result.all():
+        notification_payload = {
+            "type": "notification",
+            "notification_type": "friend_left_venue",
+            "message": f"{current_user.nickname} left {venue_name}",
+            "actor": actor_info,
+            "venue": venue_info
+        }
+        logger.info(f"Sending friend_left_venue notification to user {user.id}")
+        await manager.send_to_user(user.id, notification_payload)
+
+    # Broadcast checkout to all connected clients
+    await manager.broadcast({
+        "type": "venue_checkout",
+        "place_id": place_id,
+        "user_id": current_user.id,
+        "nickname": current_user.nickname,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
 
     return {"message": "Successfully checked out"}

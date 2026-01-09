@@ -107,6 +107,8 @@ class SimpleUserResponse(BaseModel):
     profile_picture: Optional[str]
     employer: Optional[str]
     instagram_handle: Optional[str] = None
+    is_close_friend: bool = False
+    is_mutual: bool = False
 
     class Config:
         from_attributes = True
@@ -129,6 +131,8 @@ class PublicProfileResponse(BaseModel):
     following_count: int
     # Follow state for current user
     is_followed_by_current_user: bool
+    is_close_friend: bool = False
+    is_mutual: bool = False
 
     class Config:
         from_attributes = True
@@ -685,27 +689,50 @@ async def follow_user(
     if existing:
         raise HTTPException(status_code=400, detail="Already following")
 
+    # Check if this is a follow-back (target user already follows current user)
+    reverse_follow_result = await db.execute(
+        select(Follow).where(
+            Follow.follower_id == user_id,
+            Follow.following_id == current_user.id
+        )
+    )
+    is_follow_back = reverse_follow_result.scalar_one_or_none() is not None
+
     follow = Follow(follower_id=current_user.id, following_id=user_id)
     db.add(follow)
     await db.commit()
 
-    # Send in-app notification to the followed user
-    notification_payload = {
-        "type": "notification",
-        "notification_type": "new_follower",
-        "message": f"{current_user.nickname or current_user.first_name} started following you",
-        "actor": {
-            "user_id": current_user.id,
-            "nickname": current_user.nickname,
-            "profile_picture": current_user.profile_picture
+    # Determine notification type based on follow-back status
+    if is_follow_back:
+        # Send follow-back notification to the target user
+        notification_payload = {
+            "type": "notification",
+            "notification_type": "follow_back",
+            "message": f"{current_user.nickname or current_user.first_name} followed you back",
+            "actor": {
+                "user_id": current_user.id,
+                "nickname": current_user.nickname,
+                "profile_picture": current_user.profile_picture or current_user.instagram_profile_pic
+            }
         }
-    }
+    else:
+        # Send regular new follower notification
+        notification_payload = {
+            "type": "notification",
+            "notification_type": "new_follower",
+            "message": f"{current_user.nickname or current_user.first_name} started following you",
+            "actor": {
+                "user_id": current_user.id,
+                "nickname": current_user.nickname,
+                "profile_picture": current_user.profile_picture or current_user.instagram_profile_pic
+            }
+        }
 
     logger.info(f"Sending follow notification to user {user_id}: {notification_payload}")
     sent = await ws_manager.send_to_user(user_id, notification_payload)
     logger.info(f"Follow notification sent to user {user_id}: {sent} (user connected: {user_id in ws_manager.active_connections})")
 
-    return {"status": "success"}
+    return {"status": "success", "is_mutual": is_follow_back}
 
 
 @router.delete("/follow/{user_id}")
@@ -730,6 +757,86 @@ async def unfollow_user(
     await db.commit()
 
     return {"status": "success"}
+
+
+@router.post("/follow/{user_id}/close-friend")
+async def toggle_close_friend(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Toggle close friend status for a user you follow.
+    Close friends can only be set for mutual follows (both users follow each other).
+    """
+    # Check if current user follows target user
+    result = await db.execute(
+        select(Follow).where(
+            Follow.follower_id == current_user.id,
+            Follow.following_id == user_id
+        )
+    )
+    follow = result.scalar_one_or_none()
+
+    if not follow:
+        raise HTTPException(status_code=404, detail="Not following this user")
+
+    # Check if it's a mutual follow
+    reverse_result = await db.execute(
+        select(Follow).where(
+            Follow.follower_id == user_id,
+            Follow.following_id == current_user.id
+        )
+    )
+    reverse_follow = reverse_result.scalar_one_or_none()
+
+    if not reverse_follow:
+        raise HTTPException(
+            status_code=400,
+            detail="Close friend can only be set for mutual follows"
+        )
+
+    # Toggle close friend status
+    follow.is_close_friend = not follow.is_close_friend
+    await db.commit()
+
+    return {
+        "status": "success",
+        "user_id": user_id,
+        "is_close_friend": follow.is_close_friend
+    }
+
+
+@router.get("/me/close-friends", response_model=List[SimpleUserResponse])
+async def get_close_friends(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Get list of close friends (users you've marked as close friends)"""
+    result = await db.execute(
+        select(User, Follow).join(
+            Follow, Follow.following_id == User.id
+        ).where(
+            Follow.follower_id == current_user.id,
+            Follow.is_close_friend == True
+        )
+    )
+    rows = result.all()
+
+    return [
+        SimpleUserResponse(
+            id=user.id,
+            nickname=user.nickname,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            profile_picture=user.profile_picture or user.instagram_profile_pic,
+            employer=user.employer,
+            instagram_handle=user.instagram_handle,
+            is_close_friend=follow.is_close_friend,
+            is_mutual=True  # Close friends are always mutual
+        )
+        for user, follow in rows
+    ]
 
 
 @router.get("/me/following", response_model=List[SimpleUserResponse])
@@ -865,14 +972,25 @@ async def get_user_profile(
     )
     following_count = following_result.scalar() or 0
 
-    # Check if current user follows this user
+    # Check if current user follows this user (and get close friend status)
     follow_check = await db.execute(
         select(Follow).where(
             Follow.follower_id == current_user.id,
             Follow.following_id == user_id
         )
     )
-    is_followed = follow_check.scalar_one_or_none() is not None
+    follow_record = follow_check.scalar_one_or_none()
+    is_followed = follow_record is not None
+    is_close_friend = follow_record.is_close_friend if follow_record else False
+
+    # Check if this user follows current user (mutual check)
+    reverse_follow_check = await db.execute(
+        select(Follow).where(
+            Follow.follower_id == user_id,
+            Follow.following_id == current_user.id
+        )
+    )
+    is_mutual = is_followed and reverse_follow_check.scalar_one_or_none() is not None
 
     # Conditional privacy: only show phone/email to geolocated users
     can_see_private = current_user.can_post  # Geolocated at Art Basel Miami
@@ -885,13 +1003,15 @@ async def get_user_profile(
         employer=user.employer,
         phone=user.phone if (user.phone_visible and can_see_private) else None,
         email=user.email if (user.email_visible and can_see_private) else None,
-        profile_picture=user.profile_picture,
+        profile_picture=user.profile_picture or user.instagram_profile_pic,
         instagram_handle=user.instagram_handle,
         has_profile=user.has_profile,
         posts_count=posts_count,
         followers_count=followers_count,
         following_count=following_count,
-        is_followed_by_current_user=is_followed
+        is_followed_by_current_user=is_followed,
+        is_close_friend=is_close_friend,
+        is_mutual=is_mutual
     )
 
 
