@@ -370,14 +370,13 @@ async def places_autocomplete(
 GOOGLE_PLACES_NEARBY_URL = "https://places.googleapis.com/v1/places:searchNearby"
 GOOGLE_PLACES_PHOTO_URL = "https://maps.googleapis.com/maps/api/place/photo"
 
-# Venue types for nearby search
+# Venue types for nearby search (max 5 for Google Places API)
 NEARBY_VENUE_TYPES = [
     "restaurant",
     "bar",
     "cafe",
     "night_club",
     "hotel",
-    "gym",
 ]
 
 
