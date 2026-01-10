@@ -19,6 +19,7 @@ from core.config import settings
 from api.routes.websocket import manager as ws_manager
 from services.geofence import haversine_distance
 from services.cache import cache_get, cache_set, cache_delete
+from services.tasks import enqueue_notification, payload_to_dict
 import re
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -702,10 +703,8 @@ async def follow_user(
     await cache_delete(f"user_stats:{user_id}")
     await cache_delete(f"user_stats:{current_user.id}")
 
-    # Send push notification
-    from services.apns_service import get_apns_service, NotificationPayload, NotificationType
-
-    apns = await get_apns_service()
+    # Queue push notification (non-blocking)
+    from services.apns_service import NotificationPayload, NotificationType
 
     if is_follow_back:
         payload = NotificationPayload(
@@ -726,8 +725,8 @@ async def follow_user(
             actor_profile_picture=current_user.profile_picture or current_user.instagram_profile_pic
         )
 
-    sent = await apns.send_notification(db, user_id, payload)
-    logger.info(f"Push notification sent to user {user_id}: {sent}")
+    enqueue_notification(user_id, payload_to_dict(payload))
+    logger.info(f"Queued push notification for user {user_id}")
 
     return {"status": "success", "is_mutual": is_follow_back}
 
@@ -852,7 +851,18 @@ async def get_following(
         ).where(Follow.follower_id == current_user.id)
     )
     users = result.scalars().all()
-    return users
+    return [
+        SimpleUserResponse(
+            id=u.id,
+            nickname=u.nickname,
+            first_name=u.first_name,
+            last_name=u.last_name,
+            profile_picture=u.profile_picture or u.instagram_profile_pic,
+            employer=u.employer,
+            instagram_handle=u.instagram_handle
+        )
+        for u in users
+    ]
 
 
 @router.get("/me/followers", response_model=List[SimpleUserResponse])
@@ -867,7 +877,18 @@ async def get_followers(
         ).where(Follow.following_id == current_user.id)
     )
     users = result.scalars().all()
-    return users
+    return [
+        SimpleUserResponse(
+            id=u.id,
+            nickname=u.nickname,
+            first_name=u.first_name,
+            last_name=u.last_name,
+            profile_picture=u.profile_picture or u.instagram_profile_pic,
+            employer=u.employer,
+            instagram_handle=u.instagram_handle
+        )
+        for u in users
+    ]
 
 
 @router.get("/{user_id}/following", response_model=List[SimpleUserResponse])
@@ -895,7 +916,7 @@ async def get_user_following(
             nickname=u.nickname,
             first_name=u.first_name,
             last_name=u.last_name,
-            profile_picture=u.profile_picture,
+            profile_picture=u.profile_picture or u.instagram_profile_pic,
             employer=u.employer
         )
         for u in users
@@ -927,7 +948,7 @@ async def get_user_followers(
             nickname=u.nickname,
             first_name=u.first_name,
             last_name=u.last_name,
-            profile_picture=u.profile_picture,
+            profile_picture=u.profile_picture or u.instagram_profile_pic,
             employer=u.employer
         )
         for u in users
@@ -1334,7 +1355,7 @@ async def qr_connect(
             nickname=target_user.nickname,
             first_name=target_user.first_name,
             last_name=target_user.last_name,
-            profile_picture=target_user.profile_picture,
+            profile_picture=target_user.profile_picture or target_user.instagram_profile_pic,
             employer=target_user.employer,
             instagram_handle=target_user.instagram_handle
         )
@@ -1410,7 +1431,7 @@ async def search_users(
             nickname=user.nickname,
             first_name=user.first_name,
             last_name=user.last_name,
-            profile_picture=user.profile_picture,
+            profile_picture=user.profile_picture or user.instagram_profile_pic,
             instagram_handle=user.instagram_handle,
             match_type=match_type
         ))

@@ -12,8 +12,9 @@ from api.dependencies import get_current_user
 from services.geofence import haversine_distance
 from services.places import get_place_with_photos
 from api.routes.websocket import manager
-from services.apns_service import get_apns_service, NotificationPayload, NotificationType
+from services.apns_service import NotificationPayload, NotificationType
 from services.cache import cache_get, cache_set, cache_delete
+from services.tasks import enqueue_notification, payload_to_dict
 
 router = APIRouter(prefix="/bounces", tags=["bounces"])
 logger = logging.getLogger(__name__)
@@ -52,7 +53,7 @@ async def get_active_attendees(
             AttendeeInfo(
                 user_id=att.user_id,
                 nickname=user.nickname,
-                profile_picture=user.profile_picture,
+                profile_picture=user.profile_picture or user.instagram_profile_pic,
                 joined_at=att.joined_at
             )
             for att, user in rows
@@ -223,8 +224,7 @@ async def create_bounce(
                         except Exception:
                             pass
 
-        # Send push notification to each invited user
-        apns = await get_apns_service()
+        # Queue push notifications to invited users (non-blocking)
         for user_id in invited_ids:
             payload = NotificationPayload(
                 notification_type=NotificationType.BOUNCE_INVITE,
@@ -237,7 +237,7 @@ async def create_bounce(
                 bounce_venue_name=bounce.venue_name,
                 bounce_place_id=bounce.place_id
             )
-            await apns.send_notification(db, user_id, payload)
+            enqueue_notification(user_id, payload_to_dict(payload))
 
         return bounce_response
 
@@ -706,8 +706,7 @@ async def invite_to_bounce(
 
     logger.info(f"Added {added} invites to bounce {bounce_id}")
 
-    # Send push notification to each newly invited user
-    apns = await get_apns_service()
+    # Queue push notifications to newly invited users (non-blocking)
     for user_id in newly_invited:
         payload = NotificationPayload(
             notification_type=NotificationType.BOUNCE_INVITE,
@@ -720,7 +719,7 @@ async def invite_to_bounce(
             bounce_venue_name=bounce.venue_name,
             bounce_place_id=bounce.place_id
         )
-        await apns.send_notification(db, user_id, payload)
+        enqueue_notification(user_id, payload_to_dict(payload))
 
     return {"added": added, "total": len(existing_user_ids) + added}
 
@@ -859,7 +858,7 @@ async def get_bounce_invites(
             nickname=user.nickname,
             first_name=user.first_name,
             last_name=user.last_name,
-            profile_picture=user.profile_picture,
+            profile_picture=user.profile_picture or user.instagram_profile_pic,
             invited_at=invite.created_at,
             is_checked_in=user.id in checked_in_user_ids
         )
@@ -1037,8 +1036,17 @@ async def checkin_to_bounce(
     if not bounce:
         raise HTTPException(status_code=404, detail="Bounce not found")
 
-    if not bounce.is_public:
-        raise HTTPException(status_code=403, detail="Can only check in to public bounces")
+    # For private bounces, only creator and invited users can check in
+    if not bounce.is_public and bounce.creator_id != current_user.id:
+        # Check if user is invited
+        invite_check = await db.execute(
+            select(BounceInvite).where(
+                BounceInvite.bounce_id == bounce_id,
+                BounceInvite.user_id == current_user.id
+            )
+        )
+        if not invite_check.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="Can only check in to public bounces or bounces you're invited to")
 
     if not bounce.is_now:
         raise HTTPException(status_code=400, detail="Can only check in to 'now' bounces")

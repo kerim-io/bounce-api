@@ -541,7 +541,7 @@ async def get_venue_attendees(
             attendees.append(VenueAttendeeResponse(
                 user_id=user.id,
                 nickname=user.nickname or user.username,
-                profile_picture=user.profile_picture,
+                profile_picture=user.profile_picture or user.instagram_profile_pic,
                 checked_in_at=checkin.created_at
             ))
 
