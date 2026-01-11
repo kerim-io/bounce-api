@@ -608,9 +608,15 @@ async def places_nearby(
         lat=lat,
         lng=lng,
         radius_meters=radius,
-        limit=20,
-        types=type_filter
+        limit=20
     )
+
+    # Filter cached results by type if filter specified
+    if type_filter and cached_results:
+        cached_results = [
+            p for p in cached_results
+            if any(t in type_filter for t in p.get("types", []))
+        ]
 
     # 2. If enough results from cache, return them
     if len(cached_results) >= 5:
