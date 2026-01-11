@@ -147,6 +147,7 @@ class PlacePrediction(BaseModel):
     longitude: Optional[float] = None
     distance_meters: Optional[int] = None  # Distance from user in meters
     photo_url: Optional[str] = None  # First photo URL
+    from_cache: bool = False  # True if from Redis cache, False if from Google API
 
 
 class PlacePhoto(BaseModel):
@@ -322,14 +323,14 @@ async def places_autocomplete(
 
     # 2. If enough quality results from cache, return them immediately
     if len(cached_results) >= 5:
-        predictions = [PlacePrediction(**p) for p in cached_results]
+        predictions = [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results]
         return AutocompleteResponse(predictions=predictions, from_cache=True)
 
     # 3. Fall back to Google API
     if not settings.GOOGLE_MAPS_API_KEY:
         # If no API key, return whatever we have from cache
         if cached_results:
-            predictions = [PlacePrediction(**p) for p in cached_results]
+            predictions = [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results]
             return AutocompleteResponse(predictions=predictions, from_cache=True)
         raise HTTPException(
             status_code=503,
@@ -366,7 +367,7 @@ async def places_autocomplete(
                     error_msg = data.get("error", {}).get("message", "Unknown error")
                     # If Google fails but we have cache results, return those
                     if cached_results:
-                        predictions = [PlacePrediction(**p) for p in cached_results]
+                        predictions = [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results]
                         return AutocompleteResponse(predictions=predictions, from_cache=True)
                     raise HTTPException(
                         status_code=502,
@@ -378,7 +379,7 @@ async def places_autocomplete(
                 if not raw_predictions:
                     # No Google results - return cache results if any
                     if cached_results:
-                        predictions = [PlacePrediction(**p) for p in cached_results]
+                        predictions = [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results]
                         return AutocompleteResponse(predictions=predictions, from_cache=True)
                     return AutocompleteResponse(predictions=[])
 
@@ -424,7 +425,8 @@ async def places_autocomplete(
                         latitude=place_lat,
                         longitude=place_lng,
                         distance_meters=distance_meters,
-                        photo_url=photo_url
+                        photo_url=photo_url,
+                        from_cache=False  # From Google API
                     ))
 
                 # 4. Merge cached results with Google results (cached first, deduped)
@@ -435,7 +437,7 @@ async def places_autocomplete(
                 for cached in cached_results:
                     pid = cached.get("place_id")
                     if pid and pid not in seen_place_ids:
-                        merged_predictions.append(PlacePrediction(**cached))
+                        merged_predictions.append(PlacePrediction(**{**cached, "from_cache": True}))
                         seen_place_ids.add(pid)
 
                 # Add Google results (skip duplicates)
@@ -461,7 +463,7 @@ async def places_autocomplete(
     except aiohttp.ClientError as e:
         # If network fails but we have cache results, return those
         if cached_results:
-            predictions = [PlacePrediction(**p) for p in cached_results]
+            predictions = [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results]
             return AutocompleteResponse(predictions=predictions, from_cache=True)
         raise HTTPException(status_code=502, detail=f"Failed to reach Places API: {str(e)}")
 
@@ -560,7 +562,8 @@ async def _fetch_and_index_google_nearby(
                         latitude=place_lat,
                         longitude=place_lng,
                         distance_meters=distance_meters,
-                        photo_url=photo_url
+                        photo_url=photo_url,
+                        from_cache=False  # From Google API
                     ))
 
                 # Index to global cache (fire-and-forget)
@@ -599,7 +602,7 @@ async def places_nearby(
 
     # 2. If enough results from cache, return them
     if len(cached_results) >= 5:
-        predictions = [PlacePrediction(**p) for p in cached_results]
+        predictions = [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results]
         return AutocompleteResponse(predictions=predictions, from_cache=True)
 
     # 3. Fall back to Google API
@@ -613,7 +616,7 @@ async def places_nearby(
     for cached in cached_results:
         pid = cached.get("place_id")
         if pid and pid not in seen_place_ids:
-            merged_predictions.append(PlacePrediction(**cached))
+            merged_predictions.append(PlacePrediction(**{**cached, "from_cache": True}))
             seen_place_ids.add(pid)
 
     # Add Google results (skip duplicates)
