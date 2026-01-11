@@ -266,7 +266,7 @@ async def fetch_place_details_for_autocomplete(
                 "types": result.get("types", []),
                 "photos": photos
             }
-            await cache_set(cache_key, place_details, ttl=86400)
+            await cache_set(cache_key, place_details)
 
             # Return first photo URL for autocomplete thumbnail
             first_photo_url = photos[0]["url"] if photos else None
@@ -391,7 +391,7 @@ async def places_autocomplete(
                 predictions.sort(key=lambda p: p.distance_meters if p.distance_meters is not None else float('inf'))
 
                 # Cache for 1 hour
-                await cache_set(cache_key, [p.model_dump() for p in predictions], ttl=3600)
+                await cache_set(cache_key, [p.model_dump() for p in predictions])
 
                 return AutocompleteResponse(predictions=predictions)
 
@@ -414,18 +414,18 @@ NEARBY_VENUE_TYPES = [
 
 @router.get("/places/nearby", response_model=AutocompleteResponse)
 async def places_nearby(
-    lat: float = Query(..., ge=-90, le=90, description="User latitude"),
-    lng: float = Query(..., ge=-180, le=180, description="User longitude"),
+    lat: float = Query(..., ge=-90, le=90, description="Map center latitude"),
+    lng: float = Query(..., ge=-180, le=180, description="Map center longitude"),
     radius: int = Query(1000, ge=100, le=50000, description="Search radius in meters"),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Get nearby venues (bars, restaurants, cafes, clubs, hotels) sorted by distance.
+    Get nearby venues (bars, restaurants, cafes, clubs, hotels) sorted by distance from map center.
 
     Uses the new Google Places API with venue type filtering.
-    Returns closest venues first.
+    Client should send map center coordinates, not GPS location.
 
-    Example: /geocoding/places/nearby?lat=25.79&lng=-80.13&radius=1000
+    Example: /geocoding/places/nearby?lat=48.14&lng=11.58&radius=1000
     """
     # Round coords to ~100m precision for cache efficiency
     lat_rounded = round(lat, 3)
@@ -528,7 +528,7 @@ async def places_nearby(
                 predictions.sort(key=lambda p: p.distance_meters if p.distance_meters is not None else float('inf'))
 
                 # Cache for 1 hour (nearby places don't change often)
-                await cache_set(cache_key, [p.model_dump() for p in predictions], ttl=3600)
+                await cache_set(cache_key, [p.model_dump() for p in predictions])
 
                 return AutocompleteResponse(predictions=predictions)
 
@@ -609,7 +609,7 @@ async def get_place_details(
                 )
 
                 # Cache for 24 hours (place details rarely change)
-                await cache_set(cache_key, place_details.model_dump(), ttl=86400)
+                await cache_set(cache_key, place_details.model_dump())
 
                 return place_details
 
