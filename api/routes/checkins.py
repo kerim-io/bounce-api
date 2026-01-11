@@ -309,6 +309,10 @@ async def checkin_to_venue(
 
     # Index place to global Redis cache for autocomplete/nearby search
     types_list = json.loads(place.types) if place.types else []
+    # Get first photo URL from place's photos relationship
+    photo_url = None
+    if place.photos:
+        photo_url = place.photos[0].photo_url
     await index_place_to_cache(
         place_id=place.place_id,
         name=place.name,
@@ -316,7 +320,8 @@ async def checkin_to_venue(
         lat=place.latitude,
         lng=place.longitude,
         types=types_list,
-        bounce_count=place.bounce_count
+        bounce_count=place.bounce_count,
+        photo_url=photo_url
     )
 
     # Verify user is within proximity
