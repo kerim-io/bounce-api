@@ -205,11 +205,25 @@ async def fetch_place_details_for_autocomplete(
     ssl_ctx,
     api_key: str
 ) -> tuple[Optional[float], Optional[float], Optional[str]]:
-    """Fetch coordinates and first photo for a place. Returns (lat, lng, photo_url)"""
+    """Fetch coordinates and first photo for a place. Returns (lat, lng, photo_url).
+
+    Uses cache to avoid redundant API calls - popular places are fetched once
+    and reused across all users' searches.
+    """
+    # Check cache first - reuse place details across all searches
+    cache_key = f"place_details:{place_id}"
+    cached = await cache_get(cache_key)
+    if cached:
+        lat = cached.get("latitude")
+        lng = cached.get("longitude")
+        photos = cached.get("photos", [])
+        photo_url = photos[0].get("url") if photos else None
+        return lat, lng, photo_url
+
     params = {
         "place_id": place_id,
         "key": api_key,
-        "fields": "geometry,photos"  # Only fetch what we need
+        "fields": "name,formatted_address,geometry,types,photos"  # Fetch full details for caching
     }
 
     try:
@@ -224,20 +238,38 @@ async def fetch_place_details_for_autocomplete(
             lat = location.get("lat")
             lng = location.get("lng")
 
-            # Get first photo URL
-            photo_url = None
-            photos = result.get("photos", [])
-            if photos:
-                photo_ref = photos[0].get("photo_reference")
+            # Build photo URLs (up to 5 photos) for caching
+            photos = []
+            for photo in result.get("photos", [])[:5]:
+                photo_ref = photo.get("photo_reference")
                 if photo_ref:
                     photo_url = (
                         f"https://maps.googleapis.com/maps/api/place/photo"
-                        f"?maxwidth=100"  # Small thumbnail for list
+                        f"?maxwidth=800"
                         f"&photo_reference={photo_ref}"
                         f"&key={api_key}"
                     )
+                    photos.append({
+                        "url": photo_url,
+                        "width": photo.get("width"),
+                        "height": photo.get("height")
+                    })
 
-            return lat, lng, photo_url
+            # Cache full place details for 24 hours (reused by /places/details endpoint too)
+            place_details = {
+                "place_id": place_id,
+                "name": result.get("name", ""),
+                "address": result.get("formatted_address", ""),
+                "latitude": lat,
+                "longitude": lng,
+                "types": result.get("types", []),
+                "photos": photos
+            }
+            await cache_set(cache_key, place_details, ttl=86400)
+
+            # Return first photo URL for autocomplete thumbnail
+            first_photo_url = photos[0]["url"] if photos else None
+            return lat, lng, first_photo_url
     except Exception:
         return None, None, None
 

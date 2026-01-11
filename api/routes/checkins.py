@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from math import radians, sin, cos, sqrt, atan2
 
 from db.database import get_async_session
-from db.models import CheckIn, User, Place, Bounce, Follow
+from db.models import CheckIn, CheckInHistory, User, Place, Bounce, Follow
 from api.dependencies import get_current_user
 from services.geofence import is_in_basel_area
 from services.places.service import get_place_with_photos
@@ -24,6 +24,25 @@ router = APIRouter(prefix="/checkins", tags=["checkins"])
 # Constants
 CHECKIN_PROXIMITY_METERS = 100  # Must be within 100m to check in
 CHECKIN_EXPIRY_HOURS = 24  # Check-ins expire after 24 hours of inactivity
+
+
+async def move_checkin_to_history(db: AsyncSession, checkin: CheckIn) -> None:
+    """Move a check-in to history table and delete from active check-ins."""
+    # Create history record
+    history = CheckInHistory(
+        user_id=checkin.user_id,
+        place_id=checkin.place_id,
+        places_fk_id=checkin.places_fk_id,
+        venue_name=checkin.location_name,
+        venue_address=None,
+        latitude=checkin.latitude,
+        longitude=checkin.longitude,
+        checked_in_at=checkin.created_at,
+        checked_out_at=datetime.now(timezone.utc)
+    )
+    db.add(history)
+    # Delete from active check-ins
+    await db.delete(checkin)
 
 
 def haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -328,7 +347,7 @@ async def checkin_to_venue(
             is_active=existing.is_active
         )
 
-    # Deactivate any other active check-ins for this user (user can only be at one place)
+    # Move any other active check-ins for this user to history (user can only be at one place)
     result = await db.execute(
         select(CheckIn).where(
             and_(
@@ -339,9 +358,10 @@ async def checkin_to_venue(
     )
     old_place_ids = []
     for old_checkin in result.scalars().all():
-        old_checkin.is_active = False
         if old_checkin.place_id:
             old_place_ids.append(old_checkin.place_id)
+        # Move to history and delete
+        await move_checkin_to_history(db, old_checkin)
 
     # Invalidate cache for old venues
     for old_place_id in old_place_ids:
@@ -576,14 +596,15 @@ async def checkout_from_venue(
     if not checkin:
         raise HTTPException(status_code=404, detail="No active check-in found at this venue")
 
-    # Get venue name before deactivating
+    # Get venue name before moving to history
     place_result = await db.execute(
         select(Place).where(Place.place_id == place_id)
     )
     place = place_result.scalar_one_or_none()
     venue_name = place.name if place else checkin.location_name
 
-    checkin.is_active = False
+    # Move to history and delete from active check-ins
+    await move_checkin_to_history(db, checkin)
     await db.commit()
 
     # Invalidate venue count cache
@@ -637,3 +658,101 @@ async def checkout_from_venue(
     })
 
     return {"message": "Successfully checked out"}
+
+
+# ============================================================================
+# CHECK-IN HISTORY ENDPOINTS
+# ============================================================================
+
+class CheckInHistoryResponse(BaseModel):
+    id: int
+    user_id: int
+    place_id: str
+    venue_name: str
+    venue_address: Optional[str]
+    latitude: float
+    longitude: float
+    checked_in_at: datetime
+    checked_out_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class CheckInHistoryWithUser(CheckInHistoryResponse):
+    nickname: Optional[str]
+    profile_picture: Optional[str]
+
+
+@router.get("/history/me", response_model=List[CheckInHistoryResponse])
+async def get_my_checkin_history(
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Get current user's check-in history."""
+    result = await db.execute(
+        select(CheckInHistory)
+        .where(CheckInHistory.user_id == current_user.id)
+        .order_by(desc(CheckInHistory.checked_in_at))
+        .limit(limit)
+        .offset(offset)
+    )
+    return result.scalars().all()
+
+
+@router.get("/history/user/{user_id}", response_model=List[CheckInHistoryResponse])
+async def get_user_checkin_history(
+    user_id: int,
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Get a user's check-in history."""
+    result = await db.execute(
+        select(CheckInHistory)
+        .where(CheckInHistory.user_id == user_id)
+        .order_by(desc(CheckInHistory.checked_in_at))
+        .limit(limit)
+        .offset(offset)
+    )
+    return result.scalars().all()
+
+
+@router.get("/history/venue/{place_id}", response_model=List[CheckInHistoryWithUser])
+async def get_venue_checkin_history(
+    place_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Get a venue's check-in history (all users who checked in)."""
+    result = await db.execute(
+        select(CheckInHistory, User)
+        .join(User, CheckInHistory.user_id == User.id)
+        .where(CheckInHistory.place_id == place_id)
+        .order_by(desc(CheckInHistory.checked_in_at))
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = result.all()
+
+    return [
+        CheckInHistoryWithUser(
+            id=checkin.id,
+            user_id=checkin.user_id,
+            place_id=checkin.place_id,
+            venue_name=checkin.venue_name,
+            venue_address=checkin.venue_address,
+            latitude=checkin.latitude,
+            longitude=checkin.longitude,
+            checked_in_at=checkin.checked_in_at,
+            checked_out_at=checkin.checked_out_at,
+            nickname=user.nickname,
+            profile_picture=user.profile_picture or user.instagram_profile_pic
+        )
+        for checkin, user in rows
+    ]
