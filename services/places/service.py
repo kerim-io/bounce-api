@@ -121,7 +121,7 @@ async def get_place_with_photos(
         venue_address: Venue address (fallback if API fails)
         latitude: Latitude (fallback if API fails)
         longitude: Longitude (fallback if API fails)
-        source: "bounce", "post", or "checkin" - determines which count to increment
+        source: "bounce" or "checkin" - determines which count to increment
 
     Returns:
         Place object or None if creation failed
