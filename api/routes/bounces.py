@@ -25,6 +25,33 @@ ATTENDEE_EXPIRY_MINUTES = 15
 BOUNCE_PROXIMITY_KM = 0.1  # 100 meters
 
 
+async def get_venue_photo_url(db: AsyncSession, places_fk_id: Optional[int]) -> Optional[str]:
+    """Get the first photo URL for a venue from GooglePic table."""
+    if not places_fk_id:
+        return None
+    result = await db.execute(
+        select(GooglePic.photo_url)
+        .where(GooglePic.place_id == places_fk_id)
+        .limit(1)
+    )
+    photo = result.scalar_one_or_none()
+    return photo
+
+
+async def get_venue_photos_batch(db: AsyncSession, places_fk_ids: List[int]) -> dict:
+    """Get first photo URL for multiple venues. Returns {places_fk_id: photo_url}."""
+    if not places_fk_ids:
+        return {}
+    # Get first photo for each place using DISTINCT ON
+    from sqlalchemy import distinct
+    result = await db.execute(
+        select(GooglePic.place_id, GooglePic.photo_url)
+        .where(GooglePic.place_id.in_(places_fk_ids))
+        .distinct(GooglePic.place_id)
+    )
+    return {row.place_id: row.photo_url for row in result.all()}
+
+
 async def get_active_attendees(
     db: AsyncSession,
     bounce_id: int,
@@ -102,6 +129,7 @@ class BounceResponse(BaseModel):
     latitude: float
     longitude: float
     place_id: Optional[str] = None
+    venue_photo_url: Optional[str] = None
     bounce_time: datetime
     is_now: bool
     is_public: bool
@@ -185,6 +213,7 @@ async def create_bounce(
         # Build response
         # Use profile_picture if set, otherwise fallback to instagram_profile_pic
         profile_pic = current_user.profile_picture or current_user.instagram_profile_pic
+        venue_photo = await get_venue_photo_url(db, places_fk_id)
         bounce_response = BounceResponse(
             id=bounce.id,
             creator_id=bounce.creator_id,
@@ -195,6 +224,7 @@ async def create_bounce(
             latitude=bounce.latitude,
             longitude=bounce.longitude,
             place_id=bounce.place_id,
+            venue_photo_url=venue_photo,
             bounce_time=bounce.bounce_time,
             is_now=bounce.is_now,
             is_public=bounce.is_public,
@@ -301,6 +331,10 @@ async def get_bounces(
     result = await db.execute(stmt)
     rows = result.all()
 
+    # Batch fetch venue photos
+    places_fk_ids = [bounce.places_fk_id for bounce, _, _ in rows if bounce.places_fk_id]
+    venue_photos = await get_venue_photos_batch(db, places_fk_ids)
+
     return [
         BounceResponse(
             id=bounce.id,
@@ -312,6 +346,7 @@ async def get_bounces(
             latitude=bounce.latitude,
             longitude=bounce.longitude,
             place_id=bounce.place_id,
+            venue_photo_url=venue_photos.get(bounce.places_fk_id),
             bounce_time=bounce.bounce_time,
             is_now=bounce.is_now,
             is_public=bounce.is_public,
@@ -380,6 +415,10 @@ async def get_map_bounces(
     result = await db.execute(stmt)
     rows = result.all()
 
+    # Batch fetch venue photos
+    places_fk_ids = [bounce.places_fk_id for bounce, _, _ in rows if bounce.places_fk_id]
+    venue_photos = await get_venue_photos_batch(db, places_fk_ids)
+
     # Filter: public bounces must be within radius, private ones always included
     visible_bounces = []
     seen_ids = set()
@@ -416,6 +455,7 @@ async def get_map_bounces(
                 latitude=bounce.latitude,
                 longitude=bounce.longitude,
                 place_id=bounce.place_id,
+                venue_photo_url=venue_photos.get(bounce.places_fk_id),
                 bounce_time=bounce.bounce_time,
                 is_now=bounce.is_now,
                 is_public=bounce.is_public,
@@ -453,6 +493,10 @@ async def get_my_bounces(
     result = await db.execute(stmt)
     rows = result.all()
 
+    # Batch fetch venue photos
+    places_fk_ids = [bounce.places_fk_id for bounce, _, _ in rows if bounce.places_fk_id]
+    venue_photos = await get_venue_photos_batch(db, places_fk_ids)
+
     return [
         BounceResponse(
             id=bounce.id,
@@ -464,6 +508,7 @@ async def get_my_bounces(
             latitude=bounce.latitude,
             longitude=bounce.longitude,
             place_id=bounce.place_id,
+            venue_photo_url=venue_photos.get(bounce.places_fk_id),
             bounce_time=bounce.bounce_time,
             is_now=bounce.is_now,
             is_public=bounce.is_public,
@@ -501,6 +546,10 @@ async def get_invited_bounces(
     result = await db.execute(stmt)
     rows = result.all()
 
+    # Batch fetch venue photos
+    places_fk_ids = [bounce.places_fk_id for bounce, _, _ in rows if bounce.places_fk_id]
+    venue_photos = await get_venue_photos_batch(db, places_fk_ids)
+
     return [
         BounceResponse(
             id=bounce.id,
@@ -512,6 +561,7 @@ async def get_invited_bounces(
             latitude=bounce.latitude,
             longitude=bounce.longitude,
             place_id=bounce.place_id,
+            venue_photo_url=venue_photos.get(bounce.places_fk_id),
             bounce_time=bounce.bounce_time,
             is_now=bounce.is_now,
             is_public=bounce.is_public,
@@ -561,6 +611,10 @@ async def get_public_bounces(
     result = await db.execute(stmt)
     rows = result.all()
 
+    # Batch fetch venue photos
+    places_fk_ids = [bounce.places_fk_id for bounce, _, _ in rows if bounce.places_fk_id]
+    venue_photos = await get_venue_photos_batch(db, places_fk_ids)
+
     # Filter by distance using haversine
     nearby_bounces = []
     for bounce, user, invite_count in rows:
@@ -577,6 +631,7 @@ async def get_public_bounces(
                     latitude=bounce.latitude,
                     longitude=bounce.longitude,
                     place_id=bounce.place_id,
+                    venue_photo_url=venue_photos.get(bounce.places_fk_id),
                     bounce_time=bounce.bounce_time,
                     is_now=bounce.is_now,
                     is_public=bounce.is_public,
@@ -630,6 +685,9 @@ async def get_bounce(
     )
     invite_count = count_result.scalar() or 0
 
+    # Get venue photo
+    venue_photo = await get_venue_photo_url(db, bounce.places_fk_id)
+
     return BounceResponse(
         id=bounce.id,
         creator_id=bounce.creator_id,
@@ -640,6 +698,7 @@ async def get_bounce(
         latitude=bounce.latitude,
         longitude=bounce.longitude,
         place_id=bounce.place_id,
+        venue_photo_url=venue_photo,
         bounce_time=bounce.bounce_time,
         is_now=bounce.is_now,
         is_public=bounce.is_public,
@@ -949,6 +1008,9 @@ async def archive_bounce(
     )
     invite_count = count_result.scalar() or 0
 
+    # Get venue photo
+    venue_photo = await get_venue_photo_url(db, bounce.places_fk_id)
+
     return BounceResponse(
         id=bounce.id,
         creator_id=bounce.creator_id,
@@ -958,6 +1020,8 @@ async def archive_bounce(
         venue_address=bounce.venue_address,
         latitude=bounce.latitude,
         longitude=bounce.longitude,
+        place_id=bounce.place_id,
+        venue_photo_url=venue_photo,
         bounce_time=bounce.bounce_time,
         is_now=bounce.is_now,
         is_public=bounce.is_public,
