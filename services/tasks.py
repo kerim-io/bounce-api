@@ -7,7 +7,7 @@ import asyncio
 import logging
 from typing import Optional, Dict, Any
 from redis import Redis
-from rq import Queue
+from rq import Queue, Retry
 
 from core.config import settings
 
@@ -42,7 +42,7 @@ def enqueue_notification(user_id: int, payload_dict: Dict[str, Any]) -> None:
             user_id,
             payload_dict,
             job_timeout=30,  # 30 second timeout per notification
-            retry=3,  # Retry up to 3 times on failure
+            retry=Retry(max=3),  # Retry up to 3 times on failure
         )
         logger.debug(f"Enqueued notification for user {user_id}")
     except Exception as e:

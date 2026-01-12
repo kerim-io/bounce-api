@@ -662,6 +662,7 @@ async def checkout_from_venue(
     await manager.broadcast({
         "type": "venue_checkout",
         "place_id": place_id,
+        "venue_name": venue_name,
         "user_id": current_user.id,
         "nickname": current_user.nickname,
         "timestamp": datetime.now(timezone.utc).isoformat()
