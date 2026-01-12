@@ -668,10 +668,38 @@ async def delete_bounce(
     if bounce.creator_id != current_user.id:
         raise HTTPException(status_code=403, detail="Only the creator can delete this bounce")
 
+    # Get invited users before deleting (to notify them)
+    invites_result = await db.execute(
+        select(BounceInvite.user_id).where(BounceInvite.bounce_id == bounce_id)
+    )
+    invited_user_ids = [row[0] for row in invites_result.all()]
+
+    # Get attendees (checked-in users) for public bounces
+    attendees_result = await db.execute(
+        select(BounceAttendee.user_id).where(BounceAttendee.bounce_id == bounce_id)
+    )
+    attendee_user_ids = [row[0] for row in attendees_result.all()]
+
+    # Combine all users to notify (excluding creator who initiated the delete)
+    users_to_notify = set(invited_user_ids + attendee_user_ids) - {current_user.id}
+
     await db.delete(bounce)
     await db.commit()
 
     logger.info(f"Bounce {bounce_id} deleted by user {current_user.id}")
+
+    # Notify all relevant users via WebSocket so they can remove the pin from their map
+    deletion_message = {
+        "type": "bounce_deleted",
+        "bounce_id": bounce_id
+    }
+    for user_id in users_to_notify:
+        if user_id in manager.active_connections:
+            for conn in manager.active_connections[user_id]:
+                try:
+                    await conn.send_json(deletion_message)
+                except Exception:
+                    pass
 
 
 @router.post("/{bounce_id}/invite", status_code=status.HTTP_201_CREATED)
