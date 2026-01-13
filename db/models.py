@@ -78,6 +78,7 @@ class Follow(Base):
     is_close_friend = Column(Boolean, default=False, nullable=False)  # Legacy - keeping for backwards compatibility
     close_friend_status = Column(SQLEnum('none', 'pending', 'accepted', name='close_friend_status', create_type=False), default='none', nullable=False)
     close_friend_requester_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    is_sharing_location = Column(Boolean, default=False, nullable=False)  # Whether this user shares location with the followed user
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships

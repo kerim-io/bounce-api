@@ -947,6 +947,232 @@ async def get_close_friend_status(
     }
 
 
+@router.post("/follow/{user_id}/location-sharing")
+async def toggle_location_sharing(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Toggle location sharing with a close friend.
+    When enabled, sends notification to the other user.
+    """
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot share location with yourself")
+
+    # Check if current user follows target user
+    result = await db.execute(
+        select(Follow).where(
+            Follow.follower_id == current_user.id,
+            Follow.following_id == user_id
+        )
+    )
+    follow = result.scalar_one_or_none()
+
+    if not follow:
+        raise HTTPException(status_code=404, detail="Not following this user")
+
+    # Must be close friends to share location
+    if follow.close_friend_status != 'accepted':
+        raise HTTPException(status_code=400, detail="Must be close friends to share location")
+
+    # Toggle location sharing
+    new_state = not follow.is_sharing_location
+    follow.is_sharing_location = new_state
+
+    await db.commit()
+
+    # If enabling location sharing, notify the other user
+    if new_state:
+        # Check if other user is sharing back
+        reverse_result = await db.execute(
+            select(Follow).where(
+                Follow.follower_id == user_id,
+                Follow.following_id == current_user.id
+            )
+        )
+        reverse_follow = reverse_result.scalar_one_or_none()
+        other_is_sharing = reverse_follow.is_sharing_location if reverse_follow else False
+
+        # Send WebSocket notification
+        notification_payload = {
+            "type": "location_sharing_started",
+            "actor_id": current_user.id,
+            "actor_nickname": current_user.nickname or current_user.first_name or "Someone",
+            "actor_profile_picture": current_user.profile_picture or current_user.instagram_profile_pic,
+            "message": f"{current_user.nickname or current_user.first_name} started sharing their location with you",
+            "is_requesting_share_back": not other_is_sharing
+        }
+        await ws_manager.send_to_user(user_id, notification_payload)
+
+        # Send push notification
+        from services.apns_service import NotificationType, NotificationPayload
+        payload = NotificationPayload(
+            notification_type=NotificationType.LOCATION_SHARE,
+            title="Location Sharing",
+            body=f"{current_user.nickname or current_user.first_name} started sharing their location with you",
+            actor_id=current_user.id,
+            actor_nickname=current_user.nickname or current_user.first_name or "Someone",
+            actor_profile_picture=current_user.profile_picture or current_user.instagram_profile_pic
+        )
+        enqueue_notification(user_id, payload_to_dict(payload))
+    else:
+        # Notify that location sharing stopped
+        notification_payload = {
+            "type": "location_sharing_stopped",
+            "actor_id": current_user.id,
+            "actor_nickname": current_user.nickname or current_user.first_name or "Someone",
+        }
+        await ws_manager.send_to_user(user_id, notification_payload)
+
+    return {
+        "status": "success",
+        "user_id": user_id,
+        "is_sharing_location": new_state
+    }
+
+
+@router.get("/follow/{user_id}/location-sharing/status")
+async def get_location_sharing_status(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Get location sharing status between current user and target user.
+    Returns whether each user is sharing their location with the other.
+    """
+    # Check if current user follows target user
+    result = await db.execute(
+        select(Follow).where(
+            Follow.follower_id == current_user.id,
+            Follow.following_id == user_id
+        )
+    )
+    follow = result.scalar_one_or_none()
+
+    # Check reverse follow
+    reverse_result = await db.execute(
+        select(Follow).where(
+            Follow.follower_id == user_id,
+            Follow.following_id == current_user.id
+        )
+    )
+    reverse_follow = reverse_result.scalar_one_or_none()
+
+    return {
+        "user_id": user_id,
+        "i_am_sharing": follow.is_sharing_location if follow else False,
+        "they_are_sharing": reverse_follow.is_sharing_location if reverse_follow else False
+    }
+
+
+class CloseFriendLocationUpdate(BaseModel):
+    latitude: float
+    longitude: float
+
+
+class CloseFriendLocationResponse(BaseModel):
+    user_id: int
+    nickname: Optional[str]
+    profile_picture: Optional[str]
+    latitude: float
+    longitude: float
+    updated_at: datetime
+
+
+@router.post("/me/location/close-friends")
+async def broadcast_location_to_close_friends(
+    location: CloseFriendLocationUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Broadcast current user's location to all close friends who have location sharing enabled.
+    Only sends to close friends where:
+    - We are sharing our location with them (our is_sharing_location = True)
+    - The close friend relationship is accepted
+    """
+    from datetime import datetime, timezone
+
+    # Update user's last location
+    current_user.last_location_lat = location.latitude
+    current_user.last_location_lon = location.longitude
+    current_user.last_location_update = datetime.now(timezone.utc)
+    await db.commit()
+
+    # Find all close friends we're sharing location with
+    result = await db.execute(
+        select(Follow).where(
+            Follow.follower_id == current_user.id,
+            Follow.close_friend_status == 'accepted',
+            Follow.is_sharing_location == True
+        )
+    )
+    follows = result.scalars().all()
+
+    # Send location update to each close friend via WebSocket
+    for follow in follows:
+        location_payload = {
+            "type": "close_friend_location",
+            "user_id": current_user.id,
+            "nickname": current_user.nickname or current_user.first_name,
+            "profile_picture": current_user.profile_picture or current_user.instagram_profile_pic,
+            "latitude": location.latitude,
+            "longitude": location.longitude,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        await ws_manager.send_to_user(follow.following_id, location_payload)
+
+    return {"status": "success", "recipients": len(follows)}
+
+
+@router.get("/close-friends/locations", response_model=List[CloseFriendLocationResponse])
+async def get_close_friend_locations(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Get locations of close friends who are sharing their location with you.
+    Returns locations for close friends where:
+    - They are sharing their location with you (their is_sharing_location = True)
+    - They have a recent location update
+    """
+    from datetime import datetime, timezone, timedelta
+
+    # Find close friends who are sharing their location with us
+    # This means: they follow us AND have is_sharing_location = True
+    result = await db.execute(
+        select(User, Follow).join(
+            Follow, Follow.follower_id == User.id
+        ).where(
+            Follow.following_id == current_user.id,
+            Follow.close_friend_status == 'accepted',
+            Follow.is_sharing_location == True,
+            User.last_location_lat.isnot(None),
+            User.last_location_lon.isnot(None)
+        )
+    )
+    rows = result.all()
+
+    # Filter to only include recent locations (within last 15 minutes)
+    cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=15)
+
+    locations = []
+    for user, follow in rows:
+        if user.last_location_update and user.last_location_update > cutoff_time:
+            locations.append(CloseFriendLocationResponse(
+                user_id=user.id,
+                nickname=user.nickname or user.first_name,
+                profile_picture=user.profile_picture or user.instagram_profile_pic,
+                latitude=user.last_location_lat,
+                longitude=user.last_location_lon,
+                updated_at=user.last_location_update
+            ))
+
+    return locations
+
+
 @router.get("/me/close-friends", response_model=List[SimpleUserResponse])
 async def get_close_friends(
     current_user: User = Depends(get_current_user),
