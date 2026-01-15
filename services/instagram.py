@@ -70,8 +70,9 @@ async def fetch_instagram_profile(handle: str) -> InstagramProfile:
                         "User-Agent": INSTAGRAM_HEADERS["User-Agent"],
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                         "Accept-Language": "en-US,en;q=0.9",
+                        "Cookie": "ig_cb=1",
                     },
-                    follow_redirects=True,
+                    follow_redirects=False,
                     timeout=10.0
                 )
 
