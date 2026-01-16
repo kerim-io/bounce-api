@@ -84,8 +84,9 @@ class APNsService:
             return
 
         try:
-            # Decode base64 key
-            key_data = base64.b64decode(settings.APNS_KEY_BASE64)
+            # Decode base64 key (strip whitespace that Railway might add)
+            key_b64 = settings.APNS_KEY_BASE64.strip().replace(" ", "").replace("\n", "")
+            key_data = base64.b64decode(key_b64)
 
             # Load the private key
             self._private_key = serialization.load_pem_private_key(

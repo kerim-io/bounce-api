@@ -18,11 +18,7 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 # Generated secrets
-SECRET_KEY="0B1rytrChkzawGjS3vAPAVV8-Yht9LGI5tyBhLl3xFA"
-QR_SECRET_SALT="K1_p7MkQjtEdeXAKIPgoqdtae3nNWgh7gw5Baqp6Npg"
-APPLE_PRIVATE_KEY_BASE64="LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JR1RBZ0VBTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEJIa3dkd0lCQVFRZ1A3RUJqb2orOUp2K3FZNDcKZ1g4Kzg1T0JZejYyMDNMWEhDYjJ2djNCNUJLZ0NnWUlLb1pJemowREFRZWhSQU5DQUFTUzJkN3AwcGtEUUJzaQp1QmZGVzBjdWhlK3c1bFRwZ1pzSGZTd0xKMFp6NElBdTJvQ1RtR0RwMVhNb1MzTVVBQlgzNGdqeFBLWFhoUTBkCnBaRUNYSU5QCi0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0K"
 
-echo -e "${BLUE}Step 1: Check Railway CLI${NC}"
 if ! command -v railway &> /dev/null; then
     echo -e "${RED}❌ Railway CLI not found!${NC}"
     echo "Install it with: npm i -g @railway/cli"

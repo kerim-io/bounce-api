@@ -86,11 +86,7 @@ railway variables set UPLOAD_DIR="uploads"
 railway variables set MAX_FILE_SIZE="10485760"
 railway variables set APPLE_TEAM_ID="GDZ9V6T9SF"
 railway variables set APPLE_KEY_ID="5Y3L2S8R8R"
-railway variables set APPLE_CLIENT_ID="com.bitbasel.app"
-railway variables set APPLE_REDIRECT_URI="https://bitbasel.app/auth/callback"
-railway variables set APPLE_PRIVATE_KEY_BASE64="LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JR1RBZ0VBTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEJIa3dkd0lCQVFRZ1A3RUJqb2orOUp2K3FZNDcKZ1g4Kzg1T0JZejYyMDNMWEhDYjJ2djNCNUJLZ0NnWUlLb1pJemowREFRZWhSQU5DQUFTUzJkN3AwcGtEUUJzaQp1QmZGVzBjdWhlK3c1bFRwZ1pzSGZTd0xKMFp6NElBdTJvQ1RtR0RwMVhNb1MzTVVBQlgzNGdqeFBLWFhoUTBkCnBaRUNYSU5QCi0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0K"
-railway variables set BASEL_LAT="25.7907"
-railway variables set BASEL_LON="-80.1300"
+
 railway variables set BASEL_RADIUS_KM="5"
 
 echo ""
