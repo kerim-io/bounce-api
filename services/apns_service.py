@@ -71,12 +71,19 @@ class APNsService:
 
         try:
             from aioapns import APNs
+            import tempfile
+            import os
 
-            # Decode base64 key
-            key_data = base64.b64decode(settings.APNS_KEY_BASE64)
+            # Decode base64 key to string
+            key_data = base64.b64decode(settings.APNS_KEY_BASE64).decode('utf-8')
+
+            # Write key to temporary file (aioapns expects a file path)
+            self._key_file = tempfile.NamedTemporaryFile(mode='w', suffix='.p8', delete=False)
+            self._key_file.write(key_data)
+            self._key_file.close()
 
             self._client = APNs(
-                key=key_data,
+                key=self._key_file.name,
                 key_id=settings.APNS_KEY_ID,
                 team_id=settings.APNS_TEAM_ID,
                 topic=settings.APNS_BUNDLE_ID,
