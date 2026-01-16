@@ -196,3 +196,13 @@ async def update_notification_preferences(
         close_friend_checkins=prefs.close_friend_checkins,
         push_enabled=prefs.push_enabled
     )
+
+
+@router.post("/badge/reset")
+async def reset_badge(
+    current_user: User = Depends(get_current_user),
+):
+    """Reset badge count to 0 (called when app opens)"""
+    from services.redis import reset_badge_count
+    await reset_badge_count(current_user.id)
+    return {"status": "success"}

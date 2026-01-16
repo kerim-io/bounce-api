@@ -24,3 +24,29 @@ async def close_redis():
     if _redis_client:
         await _redis_client.close()
         _redis_client = None
+
+
+# Badge count functions
+BADGE_KEY_PREFIX = "badge_count:"
+
+
+async def increment_badge_count(user_id: int) -> int:
+    """Increment and return the badge count for a user"""
+    r = await get_redis()
+    key = f"{BADGE_KEY_PREFIX}{user_id}"
+    return await r.incr(key)
+
+
+async def get_badge_count(user_id: int) -> int:
+    """Get current badge count for a user"""
+    r = await get_redis()
+    key = f"{BADGE_KEY_PREFIX}{user_id}"
+    count = await r.get(key)
+    return int(count) if count else 0
+
+
+async def reset_badge_count(user_id: int) -> None:
+    """Reset badge count to 0 for a user"""
+    r = await get_redis()
+    key = f"{BADGE_KEY_PREFIX}{user_id}"
+    await r.delete(key)

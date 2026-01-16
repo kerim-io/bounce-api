@@ -193,7 +193,7 @@ class APNsService:
         )
         return [row[0] for row in tokens_result.all()]
 
-    def _build_aps_payload(self, payload: NotificationPayload) -> Dict[str, Any]:
+    def _build_aps_payload(self, payload: NotificationPayload, badge_count: int = 1) -> Dict[str, Any]:
         """Build APNs payload with custom data"""
 
         # Custom data for app to process
@@ -230,7 +230,7 @@ class APNsService:
                     "body": payload.body,
                 },
                 "sound": "default",
-                "badge": 1,
+                "badge": badge_count,
                 "mutable-content": 1,
                 "category": payload.notification_type.value,
             },
@@ -281,6 +281,7 @@ class APNsService:
         payload: NotificationPayload
     ) -> bool:
         """Send push notification to a user's devices"""
+        from services.redis import increment_badge_count
 
         if not self._private_key:
             logger.warning("APNs not initialized - skipping push")
@@ -293,7 +294,9 @@ class APNsService:
             logger.warning(f"APNs: No active tokens for user {user_id} or notification disabled")
             return False
 
-        aps_payload = self._build_aps_payload(payload)
+        # Increment badge count for user
+        badge_count = await increment_badge_count(user_id)
+        aps_payload = self._build_aps_payload(payload, badge_count)
 
         success = False
         for token in tokens:
