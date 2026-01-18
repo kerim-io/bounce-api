@@ -136,6 +136,11 @@ async def seed_static_crowd():
             )
         """))
         await db.execute(text("DELETE FROM users WHERE apple_user_id LIKE 'test_user_%'"))
+        await db.execute(text("""
+            DELETE FROM google_pics WHERE place_id IN (
+                SELECT id FROM places WHERE place_id LIKE 'test_place_%'
+            )
+        """))
         await db.execute(text("DELETE FROM places WHERE place_id LIKE 'test_place_%'"))
         await db.commit()
         print("Cleanup complete.")
@@ -171,6 +176,36 @@ async def seed_static_crowd():
         # Get place FKs
         result = await db.execute(text("SELECT id, place_id FROM places WHERE place_id LIKE 'test_place_%'"))
         place_fks = {row.place_id: row.id for row in result.fetchall()}
+
+        # 2b. Add venue photos (so pins show images not counts)
+        print("Adding venue photos...")
+        # Placeholder venue photos - high quality venue/restaurant images
+        VENUE_PHOTOS = [
+            "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=400",  # restaurant interior
+            "https://images.unsplash.com/photo-1552566626-52f8b828add9?w=400",  # restaurant
+            "https://images.unsplash.com/photo-1514933651103-005eec06c04b?w=400",  # bar
+            "https://images.unsplash.com/photo-1559329007-40df8a9345d8?w=400",  # restaurant night
+            "https://images.unsplash.com/photo-1466978913421-dad2ebd01d17?w=400",  # cafe
+            "https://images.unsplash.com/photo-1525610553991-2bede1a236e2?w=400",  # lounge
+            "https://images.unsplash.com/photo-1554679665-f5537f187268?w=400",  # cocktail bar
+            "https://images.unsplash.com/photo-1537047902294-62a40c20a6ae?w=400",  # fine dining
+            "https://images.unsplash.com/photo-1550966871-3ed3cdb5ed0c?w=400",  # restaurant terrace
+            "https://images.unsplash.com/photo-1560624052-449f5ddf0c31?w=400",  # club
+        ]
+
+        for place_id_str, place_fk_id in place_fks.items():
+            photo_url = random.choice(VENUE_PHOTOS)
+            await db.execute(text("""
+                INSERT INTO google_pics (place_id, photo_reference, photo_url, width, height)
+                VALUES (:place_id, :ref, :url, 400, 400)
+                ON CONFLICT DO NOTHING
+            """), {
+                "place_id": place_fk_id,
+                "ref": f"test_photo_{place_id_str}",
+                "url": photo_url
+            })
+        await db.commit()
+        print(f"Added photos for {len(place_fks)} venues.")
 
         # 3. Create users
         print("Creating 1000 users...")
