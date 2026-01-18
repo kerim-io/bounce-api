@@ -10,6 +10,7 @@ import random
 import uuid
 import sys
 import os
+import httpx
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,6 +18,69 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from faker import Faker
 from sqlalchemy import text
 from db.database import create_async_session
+from core.config import settings
+
+
+async def search_place(query: str, lat: float, lon: float) -> dict | None:
+    """Search for a place using Google Places API and return place details"""
+    api_key = settings.GOOGLE_MAPS_API_KEY
+    if not api_key:
+        print(f"  WARNING: No Google API key, skipping {query}")
+        return None
+
+    async with httpx.AsyncClient() as client:
+        # Text search with location bias
+        url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+        params = {
+            "query": query,
+            "location": f"{lat},{lon}",
+            "radius": 5000,
+            "key": api_key
+        }
+        response = await client.get(url, params=params)
+        data = response.json()
+
+        if data.get("status") != "OK" or not data.get("results"):
+            print(f"  WARNING: No results for {query}")
+            return None
+
+        place = data["results"][0]
+        place_id = place["place_id"]
+
+        # Get place details with photos
+        details_url = "https://maps.googleapis.com/maps/api/place/details/json"
+        details_params = {
+            "place_id": place_id,
+            "fields": "name,formatted_address,geometry,photos",
+            "key": api_key
+        }
+        details_response = await client.get(details_url, params=details_params)
+        details_data = details_response.json()
+
+        if details_data.get("status") != "OK":
+            return None
+
+        result = details_data.get("result", {})
+        location = result.get("geometry", {}).get("location", {})
+
+        # Get photo URL if available
+        photos = result.get("photos", [])
+        photo_url = None
+        photo_ref = None
+        if photos:
+            photo_ref = photos[0].get("photo_reference")
+            if photo_ref:
+                photo_url = f"https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference={photo_ref}&key={api_key}"
+
+        return {
+            "place_id": place_id,
+            "name": result.get("name", query),
+            "address": result.get("formatted_address", ""),
+            "lat": location.get("lat", lat),
+            "lon": location.get("lng", lon),
+            "photo_url": photo_url,
+            "photo_ref": photo_ref
+        }
 
 # Profile picture placeholders (random avatars)
 PROFILE_PICS = [
@@ -122,7 +186,7 @@ async def seed_static_crowd():
 
     try:
         # 1. Clean up existing test data
-        print("Cleaning up existing test data...")
+        print("Cleaning up existing test users...")
         await db.execute(text("""
             DELETE FROM check_ins WHERE user_id IN (
                 SELECT id FROM users WHERE apple_user_id LIKE 'test_user_%'
@@ -136,76 +200,78 @@ async def seed_static_crowd():
             )
         """))
         await db.execute(text("DELETE FROM users WHERE apple_user_id LIKE 'test_user_%'"))
-        await db.execute(text("""
-            DELETE FROM google_pics WHERE place_id IN (
-                SELECT id FROM places WHERE place_id LIKE 'test_place_%'
-            )
-        """))
-        await db.execute(text("DELETE FROM places WHERE place_id LIKE 'test_place_%'"))
         await db.commit()
         print("Cleanup complete.")
 
-        # 2. Create venues
-        print("Creating venues...")
-        london_place_ids = []
-        dubai_place_ids = []
+        # 2. Fetch real venues from Google Places API
+        print("Fetching real venues from Google Places API...")
+        london_venues_real = []
+        dubai_venues_real = []
 
-        for i, venue in enumerate(LONDON_VENUES):
-            place_id = f"test_place_london_{i}"
+        print("  Fetching London venues...")
+        for venue in LONDON_VENUES:
+            place_data = await search_place(f"{venue['name']} London", venue["lat"], venue["lon"])
+            if place_data:
+                london_venues_real.append(place_data)
+                print(f"    Found: {place_data['name']}")
+            await asyncio.sleep(0.1)  # Rate limit
+
+        print("  Fetching Dubai venues...")
+        for venue in DUBAI_VENUES:
+            place_data = await search_place(f"{venue['name']} Dubai", venue["lat"], venue["lon"])
+            if place_data:
+                dubai_venues_real.append(place_data)
+                print(f"    Found: {place_data['name']}")
+            await asyncio.sleep(0.1)  # Rate limit
+
+        print(f"Found {len(london_venues_real)} London venues, {len(dubai_venues_real)} Dubai venues.")
+
+        # Insert venues into places table
+        print("Creating venue records...")
+        place_fks = {}
+
+        for venue in london_venues_real + dubai_venues_real:
             await db.execute(text("""
                 INSERT INTO places (place_id, name, address, latitude, longitude, bounce_count)
                 VALUES (:place_id, :name, :address, :lat, :lon, 0)
-                ON CONFLICT (place_id) DO NOTHING
-            """), {"place_id": place_id, "name": venue["name"], "address": venue["address"],
-                   "lat": venue["lat"], "lon": venue["lon"]})
-            london_place_ids.append({"place_id": place_id, **venue})
-
-        for i, venue in enumerate(DUBAI_VENUES):
-            place_id = f"test_place_dubai_{i}"
-            await db.execute(text("""
-                INSERT INTO places (place_id, name, address, latitude, longitude, bounce_count)
-                VALUES (:place_id, :name, :address, :lat, :lon, 0)
-                ON CONFLICT (place_id) DO NOTHING
-            """), {"place_id": place_id, "name": venue["name"], "address": venue["address"],
-                   "lat": venue["lat"], "lon": venue["lon"]})
-            dubai_place_ids.append({"place_id": place_id, **venue})
+                ON CONFLICT (place_id) DO UPDATE SET name = :name, address = :address
+            """), {
+                "place_id": venue["place_id"],
+                "name": venue["name"],
+                "address": venue["address"],
+                "lat": venue["lat"],
+                "lon": venue["lon"]
+            })
 
         await db.commit()
-        print(f"Created {len(london_place_ids)} London venues, {len(dubai_place_ids)} Dubai venues.")
 
         # Get place FKs
-        result = await db.execute(text("SELECT id, place_id FROM places WHERE place_id LIKE 'test_place_%'"))
-        place_fks = {row.place_id: row.id for row in result.fetchall()}
+        all_place_ids = [v["place_id"] for v in london_venues_real + dubai_venues_real]
+        for pid in all_place_ids:
+            result = await db.execute(text("SELECT id FROM places WHERE place_id = :pid"), {"pid": pid})
+            row = result.fetchone()
+            if row:
+                place_fks[pid] = row.id
 
-        # 2b. Add venue photos (so pins show images not counts)
+        # Add venue photos
         print("Adding venue photos...")
-        # Placeholder venue photos - high quality venue/restaurant images
-        VENUE_PHOTOS = [
-            "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=400",  # restaurant interior
-            "https://images.unsplash.com/photo-1552566626-52f8b828add9?w=400",  # restaurant
-            "https://images.unsplash.com/photo-1514933651103-005eec06c04b?w=400",  # bar
-            "https://images.unsplash.com/photo-1559329007-40df8a9345d8?w=400",  # restaurant night
-            "https://images.unsplash.com/photo-1466978913421-dad2ebd01d17?w=400",  # cafe
-            "https://images.unsplash.com/photo-1525610553991-2bede1a236e2?w=400",  # lounge
-            "https://images.unsplash.com/photo-1554679665-f5537f187268?w=400",  # cocktail bar
-            "https://images.unsplash.com/photo-1537047902294-62a40c20a6ae?w=400",  # fine dining
-            "https://images.unsplash.com/photo-1550966871-3ed3cdb5ed0c?w=400",  # restaurant terrace
-            "https://images.unsplash.com/photo-1560624052-449f5ddf0c31?w=400",  # club
-        ]
-
-        for place_id_str, place_fk_id in place_fks.items():
-            photo_url = random.choice(VENUE_PHOTOS)
-            await db.execute(text("""
-                INSERT INTO google_pics (place_id, photo_reference, photo_url, width, height)
-                VALUES (:place_id, :ref, :url, 400, 400)
-                ON CONFLICT DO NOTHING
-            """), {
-                "place_id": place_fk_id,
-                "ref": f"test_photo_{place_id_str}",
-                "url": photo_url
-            })
+        for venue in london_venues_real + dubai_venues_real:
+            if venue.get("photo_ref") and venue["place_id"] in place_fks:
+                await db.execute(text("""
+                    INSERT INTO google_pics (place_id, photo_reference, photo_url, width, height)
+                    VALUES (:place_id, :ref, :url, 400, 400)
+                    ON CONFLICT DO NOTHING
+                """), {
+                    "place_id": place_fks[venue["place_id"]],
+                    "ref": venue["photo_ref"],
+                    "url": venue["photo_url"]
+                })
         await db.commit()
-        print(f"Added photos for {len(place_fks)} venues.")
+        print(f"Added photos for venues.")
+
+        # Combine for user assignment
+        london_place_ids = london_venues_real
+        dubai_place_ids = dubai_venues_real
 
         # 3. Create users
         print("Creating 1000 users...")
@@ -250,6 +316,8 @@ async def seed_static_crowd():
 
             # Create check-in
             places_fk_id = place_fks.get(venue["place_id"])
+            if not places_fk_id:
+                continue  # Skip if venue wasn't found
             await db.execute(text("""
                 INSERT INTO check_ins (user_id, latitude, longitude, location_name, place_id, places_fk_id, is_active)
                 VALUES (:user_id, :lat, :lon, :name, :place_id, :places_fk_id, true)
