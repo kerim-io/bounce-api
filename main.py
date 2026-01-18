@@ -11,6 +11,9 @@ from slowapi.errors import RateLimitExceeded
 from db.database import create_db_and_tables
 from api.routes import auth, users, websocket, geocoding, bounces, notifications, checkins
 from api.routes.websocket import manager as ws_manager
+# Instagram 2FA - uncomment when ready to use
+# from api.routes import instagram_verify
+# from services.instagram_2fa import start_ig_poller, stop_ig_poller
 from api.dependencies import limiter
 from services.redis import close_redis
 from core.config import settings
@@ -33,8 +36,11 @@ async def lifespan(app: FastAPI):
     await create_db_and_tables()
     # Start WebSocket Redis subscriber
     await ws_manager.start_subscriber()
+    # Instagram 2FA poller - uncomment when ready to use
+    # await start_ig_poller()
     yield
     # Cleanup
+    # await stop_ig_poller()
     await close_redis()
 
 
@@ -75,6 +81,7 @@ app.include_router(geocoding.router)
 app.include_router(bounces.router)
 app.include_router(notifications.router)
 app.include_router(checkins.router)
+# app.include_router(instagram_verify.router)  # Uncomment when ready to use
 
 
 @app.get("/")

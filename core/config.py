@@ -54,4 +54,10 @@ class Settings:
     APNS_BUNDLE_ID: str = os.getenv("APNS_BUNDLE_ID", "com.theappagency.lit")  # App bundle ID
     APNS_USE_SANDBOX: bool = os.getenv("APNS_USE_SANDBOX", "false").lower() == "true"
 
+    # Instagram 2FA Verification
+    IG_USERNAME: str = os.getenv("IG_USERNAME", "")
+    IG_PASSWORD: str = os.getenv("IG_PASSWORD", "")
+    IG_POLL_INTERVAL: int = int(os.getenv("IG_POLL_INTERVAL", "45"))  # seconds
+    IG_VERIFICATION_TTL: int = int(os.getenv("IG_VERIFICATION_TTL", "86400"))  # 24 hours
+
 settings = Settings()
