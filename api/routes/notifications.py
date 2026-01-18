@@ -204,5 +204,6 @@ async def reset_badge(
 ):
     """Reset badge count to 0 (called when app opens)"""
     from services.redis import reset_badge_count
+    logger.info(f"Resetting badge count for user {current_user.id}")
     await reset_badge_count(current_user.id)
     return {"status": "success"}
