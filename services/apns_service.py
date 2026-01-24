@@ -158,7 +158,7 @@ class APNsService:
         db: AsyncSession,
         user_id: int,
         notification_type: NotificationType
-    ) -> List[str]:
+    ) -> List[DeviceToken]:
         """Get active device tokens for user if notification type is enabled"""
 
         # Check user's notification preferences
@@ -193,7 +193,7 @@ class APNsService:
         for t in all_user_tokens:
             logger.info(f"APNs:   - Token: {t.device_token[:20]}... active={t.is_active} sandbox={t.is_sandbox}")
 
-        active_tokens = [t.device_token for t in all_user_tokens if t.is_active]
+        active_tokens = [t for t in all_user_tokens if t.is_active]
         return active_tokens
 
     def _build_aps_payload(self, payload: NotificationPayload, badge_count: int = 1) -> Dict[str, Any]:
@@ -240,13 +240,15 @@ class APNsService:
             "data": custom_data
         }
 
-    async def _send_to_token(self, token: str, aps_payload: Dict[str, Any]) -> tuple[bool, Optional[str]]:
+    async def _send_to_token(self, token: str, is_sandbox: bool, aps_payload: Dict[str, Any]) -> tuple[bool, Optional[str]]:
         """Send notification to a single device token"""
         if not self._client or not self._private_key:
             return False, "APNs not initialized"
 
-        base_url = APNS_SANDBOX_URL if settings.APNS_USE_SANDBOX else APNS_PRODUCTION_URL
+        # Use the token's sandbox flag to determine which server to use
+        base_url = APNS_SANDBOX_URL if is_sandbox else APNS_PRODUCTION_URL
         url = f"{base_url}/3/device/{token}"
+        logger.info(f"APNs: Sending to {'SANDBOX' if is_sandbox else 'PRODUCTION'} server")
 
         headers = {
             "authorization": f"bearer {self._get_jwt_token()}",
@@ -290,10 +292,10 @@ class APNsService:
             logger.warning("APNs not initialized - skipping push")
             return False
 
-        tokens = await self._get_user_tokens(db, user_id, payload.notification_type)
-        logger.info(f"APNs: Found {len(tokens)} token(s) for user {user_id}")
+        device_tokens = await self._get_user_tokens(db, user_id, payload.notification_type)
+        logger.info(f"APNs: Found {len(device_tokens)} token(s) for user {user_id}")
 
-        if not tokens:
+        if not device_tokens:
             logger.warning(f"APNs: No active tokens for user {user_id} or notification disabled")
             return False
 
@@ -302,17 +304,21 @@ class APNsService:
         aps_payload = self._build_aps_payload(payload, badge_count)
 
         success = False
-        for token in tokens:
-            sent, error = await self._send_to_token(token, aps_payload)
+        for device_token in device_tokens:
+            sent, error = await self._send_to_token(
+                device_token.device_token,
+                device_token.is_sandbox,
+                aps_payload
+            )
 
             if sent:
-                logger.info(f"Push sent to user {user_id}, token {token[:20]}...")
+                logger.info(f"Push sent to user {user_id}, token {device_token.device_token[:20]}...")
                 success = True
 
                 # Update last_used_at
                 await db.execute(
                     update(DeviceToken)
-                    .where(DeviceToken.device_token == token)
+                    .where(DeviceToken.device_token == device_token.device_token)
                     .values(last_used_at=datetime.now(timezone.utc))
                 )
             else:
@@ -322,7 +328,7 @@ class APNsService:
                 if error in ['BadDeviceToken', 'Unregistered', 'DeviceTokenNotForTopic']:
                     await db.execute(
                         update(DeviceToken)
-                        .where(DeviceToken.device_token == token)
+                        .where(DeviceToken.device_token == device_token.device_token)
                         .values(is_active=False)
                     )
                     logger.info(f"Deactivated invalid token for user {user_id}")
