@@ -53,6 +53,8 @@ async def register_device_token(
     db: AsyncSession = Depends(get_async_session)
 ):
     """Register or update device token for push notifications"""
+    logger.info(f"=== DEVICE TOKEN REGISTRATION ===")
+    logger.info(f"User ID: {current_user.id}, Token: {request.device_token[:20]}..., Sandbox: {request.is_sandbox}")
 
     # Check if token already exists for this user
     result = await db.execute(
@@ -91,7 +93,22 @@ async def register_device_token(
         db.add(device_token)
 
     await db.commit()
+
+    # Log all active tokens for this user after registration
+    all_tokens = await db.execute(
+        select(DeviceToken).where(
+            and_(
+                DeviceToken.user_id == current_user.id,
+                DeviceToken.is_active == True
+            )
+        )
+    )
+    active_tokens = all_tokens.scalars().all()
     logger.info(f"Device token registered for user {current_user.id}: {request.device_token[:20]}... (sandbox={request.is_sandbox})")
+    logger.info(f"User {current_user.id} now has {len(active_tokens)} active token(s)")
+    for t in active_tokens:
+        logger.info(f"  - Token: {t.device_token[:20]}... sandbox={t.is_sandbox} active={t.is_active}")
+
     return {"status": "success", "message": "Device token registered"}
 
 
@@ -102,6 +119,8 @@ async def unregister_device_token(
     db: AsyncSession = Depends(get_async_session)
 ):
     """Unregister device token (e.g., on logout)"""
+    logger.info(f"=== DEVICE TOKEN UNREGISTER ===")
+    logger.info(f"User {current_user.id} unregistering token: {device_token[:20] if len(device_token) > 20 else device_token}...")
 
     result = await db.execute(
         select(DeviceToken).where(
@@ -116,6 +135,9 @@ async def unregister_device_token(
     if token:
         token.is_active = False
         await db.commit()
+        logger.info(f"Token deactivated for user {current_user.id}")
+    else:
+        logger.warning(f"Token not found for user {current_user.id} - nothing to unregister")
 
     return {"status": "success"}
 

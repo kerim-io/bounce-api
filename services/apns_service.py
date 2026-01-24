@@ -184,14 +184,17 @@ class APNsService:
 
         # Get active device tokens
         tokens_result = await db.execute(
-            select(DeviceToken.device_token).where(
-                and_(
-                    DeviceToken.user_id == user_id,
-                    DeviceToken.is_active == True
-                )
+            select(DeviceToken).where(
+                DeviceToken.user_id == user_id
             )
         )
-        return [row[0] for row in tokens_result.all()]
+        all_user_tokens = tokens_result.scalars().all()
+        logger.info(f"APNs: User {user_id} has {len(all_user_tokens)} total token(s) in DB")
+        for t in all_user_tokens:
+            logger.info(f"APNs:   - Token: {t.device_token[:20]}... active={t.is_active} sandbox={t.is_sandbox}")
+
+        active_tokens = [t.device_token for t in all_user_tokens if t.is_active]
+        return active_tokens
 
     def _build_aps_payload(self, payload: NotificationPayload, badge_count: int = 1) -> Dict[str, Any]:
         """Build APNs payload with custom data"""
