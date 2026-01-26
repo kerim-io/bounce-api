@@ -56,6 +56,7 @@ class User(Base):
     bio = Column(String(500), nullable=True)
     refresh_token = Column(String(500), nullable=True)
     is_active = Column(Boolean, default=True)
+    is_admin = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -212,6 +213,7 @@ class BounceInvite(Base):
     id = Column(Integer, primary_key=True, index=True)
     bounce_id = Column(Integer, ForeignKey("bounces.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String(50), default='pending', nullable=False)  # pending, accepted, declined
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships

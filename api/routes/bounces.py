@@ -827,19 +827,16 @@ async def invite_to_bounce(
     return {"added": added, "total": len(existing_user_ids) + added}
 
 
-@router.delete("/{bounce_id}/invite/{user_id}")
-async def remove_invite(
+@router.post("/{bounce_id}/accept")
+async def accept_bounce_invite(
     bounce_id: int,
-    user_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session)
 ):
     """
-    Remove a user's invite from a bounce.
+    Accept a bounce invite.
 
-    Allowed by:
-    - The bounce creator (can remove anyone)
-    - The invited user themselves (declining the invite)
+    Only the invited user can accept their own invite.
     """
     result = await db.execute(
         select(Bounce).where(Bounce.id == bounce_id)
@@ -849,11 +846,125 @@ async def remove_invite(
     if not bounce:
         raise HTTPException(status_code=404, detail="Bounce not found")
 
-    is_creator = bounce.creator_id == current_user.id
-    is_self = user_id == current_user.id
+    # Find the invite
+    invite_result = await db.execute(
+        select(BounceInvite).where(
+            BounceInvite.bounce_id == bounce_id,
+            BounceInvite.user_id == current_user.id
+        )
+    )
+    invite = invite_result.scalar_one_or_none()
 
-    if not (is_creator or is_self):
-        raise HTTPException(status_code=403, detail="Not authorized to remove this invite")
+    if not invite:
+        raise HTTPException(status_code=404, detail="You are not invited to this bounce")
+
+    if invite.status == "accepted":
+        return {"success": True, "message": "Invite already accepted"}
+
+    if invite.status == "declined":
+        raise HTTPException(status_code=400, detail="Cannot accept a declined invite")
+
+    invite.status = "accepted"
+    await db.commit()
+
+    logger.info(f"Invite accepted: bounce {bounce_id}, user {current_user.id}")
+
+    # Notify the bounce creator
+    if bounce.creator_id in manager.active_connections:
+        for conn in manager.active_connections[bounce.creator_id]:
+            try:
+                await conn.send_json({
+                    "type": "bounce_invite_update",
+                    "bounce_id": bounce_id,
+                    "user_id": current_user.id,
+                    "status": "accepted"
+                })
+            except Exception:
+                pass
+
+    return {"success": True, "message": "Invite accepted"}
+
+
+@router.post("/{bounce_id}/decline")
+async def decline_bounce_invite(
+    bounce_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Decline a bounce invite.
+
+    Only the invited user can decline their own invite.
+    """
+    result = await db.execute(
+        select(Bounce).where(Bounce.id == bounce_id)
+    )
+    bounce = result.scalar_one_or_none()
+
+    if not bounce:
+        raise HTTPException(status_code=404, detail="Bounce not found")
+
+    # Find the invite
+    invite_result = await db.execute(
+        select(BounceInvite).where(
+            BounceInvite.bounce_id == bounce_id,
+            BounceInvite.user_id == current_user.id
+        )
+    )
+    invite = invite_result.scalar_one_or_none()
+
+    if not invite:
+        raise HTTPException(status_code=404, detail="You are not invited to this bounce")
+
+    if invite.status == "declined":
+        return {"success": True, "message": "Invite already declined"}
+
+    invite.status = "declined"
+    await db.commit()
+
+    logger.info(f"Invite declined: bounce {bounce_id}, user {current_user.id}")
+
+    # Notify the bounce creator
+    if bounce.creator_id in manager.active_connections:
+        for conn in manager.active_connections[bounce.creator_id]:
+            try:
+                await conn.send_json({
+                    "type": "bounce_invite_update",
+                    "bounce_id": bounce_id,
+                    "user_id": current_user.id,
+                    "status": "declined"
+                })
+            except Exception:
+                pass
+
+    return {"success": True, "message": "Invite declined"}
+
+
+@router.delete("/{bounce_id}/invite/{user_id}")
+async def remove_invite(
+    bounce_id: int,
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Remove a user's invite from a bounce (hard delete).
+
+    Allowed by:
+    - The bounce creator (can remove anyone)
+
+    Note: For invited users to decline, use POST /{bounce_id}/decline instead.
+    """
+    result = await db.execute(
+        select(Bounce).where(Bounce.id == bounce_id)
+    )
+    bounce = result.scalar_one_or_none()
+
+    if not bounce:
+        raise HTTPException(status_code=404, detail="Bounce not found")
+
+    if bounce.creator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the bounce creator can remove invites")
 
     # Find and delete the invite
     invite_result = await db.execute(
@@ -895,6 +1006,7 @@ class InvitedUserInfo(BaseModel):
     last_name: Optional[str]
     profile_picture: Optional[str]
     invited_at: datetime
+    status: str = "pending"  # pending, accepted, declined
     is_checked_in: bool = False
 
 
@@ -976,6 +1088,7 @@ async def get_bounce_invites(
             last_name=user.last_name,
             profile_picture=user.profile_picture or user.instagram_profile_pic,
             invited_at=invite.created_at,
+            status=invite.status,
             is_checked_in=user.id in checked_in_user_ids
         )
         for invite, user in rows
