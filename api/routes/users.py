@@ -679,6 +679,41 @@ async def unfollow_user(
     return {"status": "success"}
 
 
+@router.get("/me/close-friend-requests")
+async def get_pending_close_friend_requests(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Get list of pending close friend requests where others have requested to be close friends with the current user.
+    """
+    # Get all follows where someone else requested to be close friends with current user
+    stmt = (
+        select(Follow, User)
+        .join(User, Follow.follower_id == User.id)
+        .where(
+            Follow.following_id == current_user.id,
+            Follow.close_friend_status == 'pending',
+            Follow.close_friend_requester_id != current_user.id
+        )
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    requests = []
+    for follow, user in rows:
+        requests.append({
+            "user_id": user.id,
+            "nickname": user.nickname,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "profile_picture": user.profile_picture or user.instagram_profile_pic,
+            "requested_at": follow.created_at.isoformat() if follow.created_at else None
+        })
+
+    return {"requests": requests, "count": len(requests)}
+
+
 @router.post("/follow/{user_id}/close-friend/request")
 async def request_close_friend(
     user_id: int,
