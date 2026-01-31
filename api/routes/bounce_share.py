@@ -1,7 +1,7 @@
 import secrets
 import json
 import logging
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -36,6 +36,7 @@ async def _is_participant(db: AsyncSession, bounce_id: int, user_id: int) -> boo
 @router.post("/bounces/{bounce_id}/share-link")
 async def create_share_link(
     bounce_id: int,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session)
 ):
@@ -55,14 +56,14 @@ async def create_share_link(
         await db.commit()
         await db.refresh(bounce)
 
-    base = settings.BASE_URL.rstrip("/")
-    share_url = f"{base}/bounce/share/{bounce.share_token}"
+    share_url = f"https://bounce-map.up.railway.app/bounce/share/{bounce.share_token}"
     return {"share_url": share_url, "share_token": bounce.share_token}
 
 
 @router.get("/bounce/share/{share_token}", response_class=HTMLResponse)
 async def bounce_share_page(
     share_token: str,
+    request: Request,
     db: AsyncSession = Depends(get_async_session)
 ):
     """Serve the web map page for a shared bounce."""
@@ -93,8 +94,8 @@ async def bounce_share_page(
     html = html.replace("{{SHARE_TOKEN}}", share_token)
     html = html.replace("{{GOOGLE_MAPS_API_KEY}}", settings.GOOGLE_MAPS_API_KEY)
 
-    # Determine WS scheme from BASE_URL
-    base = settings.BASE_URL.rstrip("/")
+    # Derive WS base from the incoming request
+    base = str(request.base_url).rstrip("/")
     ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
     html = html.replace("{{WS_BASE}}", ws_base)
 
