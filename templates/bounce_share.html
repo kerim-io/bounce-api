@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>{{VENUE_NAME}} - Bounce</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -22,6 +22,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 #info-bar .title{font-size:16px;font-weight:600}
 #info-bar .sub{font-size:12px;color:#aaa}
 #status{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:rgba(17,17,17,.9);padding:8px 16px;border-radius:20px;font-size:12px;color:#aaa;z-index:500;display:none}
+.map-label{position:absolute;background:rgba(0,0,0,.75);color:#fff;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap;transform:translate(-50%,6px);pointer-events:none}
 </style>
 </head>
 <body>
@@ -51,11 +52,16 @@ const VENUE_LAT = {{LATITUDE}};
 const VENUE_LNG = {{LONGITUDE}};
 const SHARE_TOKEN = "{{SHARE_TOKEN}}";
 const WS_BASE = "{{WS_BASE}}";
+const STORAGE_KEY_ID = 'bounce_guest_id_' + SHARE_TOKEN;
+const STORAGE_KEY_NAME = 'bounce_guest_name_' + SHARE_TOKEN;
 
 let map, ws, geoWatchId;
 let markers = {};       // keyed by "user_{id}" or "guest_{id}"
+let labelOverlays = {}; // name labels keyed same as markers
 let myGuestId;
 let myName;
+let reconnectTimer;
+let pingInterval;
 
 const nameInput = document.getElementById('name-input');
 const joinBtn = document.getElementById('join-btn');
@@ -64,79 +70,113 @@ nameInput.addEventListener('input', () => {
   joinBtn.disabled = !nameInput.value.trim();
 });
 
+nameInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && nameInput.value.trim()) joinBounce();
+});
+
 function joinBounce() {
   myName = nameInput.value.trim();
   if (!myName) return;
 
-  // Generate or retrieve guest_id
-  myGuestId = sessionStorage.getItem('bounce_guest_id');
+  // Generate or retrieve guest_id — use localStorage so it survives refresh
+  myGuestId = localStorage.getItem(STORAGE_KEY_ID);
   if (!myGuestId) {
     myGuestId = crypto.randomUUID();
-    sessionStorage.setItem('bounce_guest_id', myGuestId);
+    localStorage.setItem(STORAGE_KEY_ID, myGuestId);
   }
-  sessionStorage.setItem('bounce_guest_name', myName);
+  localStorage.setItem(STORAGE_KEY_NAME, myName);
 
   document.getElementById('overlay').style.display = 'none';
   document.getElementById('info-bar').style.display = 'block';
   initMap();
 }
 
-// Restore session if returning
+// Auto-join if returning user (localStorage persists across refreshes)
 (function() {
-  const savedName = sessionStorage.getItem('bounce_guest_name');
-  const savedId = sessionStorage.getItem('bounce_guest_id');
+  const savedName = localStorage.getItem(STORAGE_KEY_NAME);
+  const savedId = localStorage.getItem(STORAGE_KEY_ID);
   if (savedName && savedId) {
-    nameInput.value = savedName;
-    joinBtn.disabled = false;
+    // Auto-join without showing the overlay
+    myName = savedName;
+    myGuestId = savedId;
+    document.getElementById('overlay').style.display = 'none';
+    document.getElementById('info-bar').style.display = 'block';
+    // Wait for Google Maps script to load, then init
+    waitForMaps(() => initMap());
+  } else {
+    nameInput.focus();
   }
 })();
 
-function initMap() {
-  map = new google.maps.Map(document.getElementById('map'), {
-    center: { lat: VENUE_LAT, lng: VENUE_LNG },
-    zoom: 16,
-    disableDefaultUI: true,
-    zoomControl: true,
-    styles: [
-      { elementType: 'geometry', stylers: [{ color: '#1d2c4d' }] },
-      { elementType: 'labels.text.fill', stylers: [{ color: '#8ec3b9' }] },
-      { elementType: 'labels.text.stroke', stylers: [{ color: '#1a3646' }] },
-      { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#304a7d' }] },
-      { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#255763' }] },
-      { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0e1626' }] },
-      { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#283d6a' }] }
-    ]
-  });
+function waitForMaps(cb) {
+  if (typeof google !== 'undefined' && google.maps) { cb(); return; }
+  const check = setInterval(() => {
+    if (typeof google !== 'undefined' && google.maps) {
+      clearInterval(check);
+      cb();
+    }
+  }, 100);
+}
 
-  // Venue marker
-  new google.maps.Marker({
-    position: { lat: VENUE_LAT, lng: VENUE_LNG },
-    map: map,
-    title: "{{VENUE_NAME}}",
-    icon: {
-      path: google.maps.SymbolPath.CIRCLE,
-      scale: 14,
-      fillColor: '#ff4444',
-      fillOpacity: 1,
-      strokeColor: '#fff',
-      strokeWeight: 3
-    },
-    label: { text: '\u2605', color: '#fff', fontSize: '14px', fontWeight: 'bold' }
-  });
+function initMap() {
+  if (!map) {
+    map = new google.maps.Map(document.getElementById('map'), {
+      center: { lat: VENUE_LAT, lng: VENUE_LNG },
+      zoom: 16,
+      disableDefaultUI: true,
+      zoomControl: true,
+      styles: [
+        { elementType: 'geometry', stylers: [{ color: '#1d2c4d' }] },
+        { elementType: 'labels.text.fill', stylers: [{ color: '#8ec3b9' }] },
+        { elementType: 'labels.text.stroke', stylers: [{ color: '#1a3646' }] },
+        { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#304a7d' }] },
+        { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#255763' }] },
+        { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0e1626' }] },
+        { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#283d6a' }] }
+      ]
+    });
+
+    // Venue marker — destination pin
+    new google.maps.Marker({
+      position: { lat: VENUE_LAT, lng: VENUE_LNG },
+      map: map,
+      title: "{{VENUE_NAME}}",
+      icon: {
+        url: 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="50" viewBox="0 0 40 50"><path d="M20 0C9 0 0 9 0 20c0 15 20 30 20 30s20-15 20-30C40 9 31 0 20 0z" fill="#ff4444" stroke="#fff" stroke-width="2"/><circle cx="20" cy="18" r="8" fill="#fff"/><text x="20" y="22" text-anchor="middle" font-size="14" font-weight="bold" fill="#ff4444">&#9733;</text></svg>'),
+        scaledSize: new google.maps.Size(40, 50),
+        anchor: new google.maps.Point(20, 50)
+      }
+    });
+  }
 
   connectWebSocket();
   startGeolocation();
 }
 
 function connectWebSocket() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+  clearTimeout(reconnectTimer);
+
   const url = `${WS_BASE}/ws/bounce/${SHARE_TOKEN}?guest_id=${encodeURIComponent(myGuestId)}&name=${encodeURIComponent(myName)}`;
   ws = new WebSocket(url);
 
-  ws.onopen = () => showStatus('Connected');
-  ws.onclose = () => {
-    showStatus('Disconnected. Reconnecting...');
-    setTimeout(connectWebSocket, 3000);
+  ws.onopen = () => {
+    showStatus('Connected');
+    // Start keepalive
+    clearInterval(pingInterval);
+    pingInterval = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send('ping');
+    }, 25000);
   };
+
+  ws.onclose = () => {
+    showStatus('Reconnecting...');
+    clearInterval(pingInterval);
+    reconnectTimer = setTimeout(connectWebSocket, 3000);
+  };
+
   ws.onerror = () => {};
 
   ws.onmessage = (event) => {
@@ -146,18 +186,17 @@ function connectWebSocket() {
       handleMessage(msg);
     } catch(e) {}
   };
-
-  // Keepalive
-  setInterval(() => {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send('ping');
-  }, 25000);
 }
 
 function handleMessage(msg) {
   switch(msg.type) {
     case 'initial_state':
+      // Clear existing markers (reconnect may have stale data)
+      Object.keys(markers).forEach(k => { if (k !== 'self') removeMarker(k); });
       (msg.app_users || []).forEach(u => upsertAppUser(u));
-      (msg.guests || []).forEach(g => upsertGuest(g));
+      (msg.guests || []).forEach(g => {
+        if (g.guest_id !== myGuestId) upsertGuest(g);
+      });
       updateCount();
       break;
     case 'location_shared':
@@ -183,25 +222,33 @@ function handleMessage(msg) {
   }
 }
 
+function createPinSVG(color, letter) {
+  return 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">' +
+    '<circle cx="18" cy="18" r="16" fill="' + color + '" stroke="#fff" stroke-width="3"/>' +
+    '<text x="18" y="23" text-anchor="middle" font-size="15" font-weight="bold" fill="#fff">' + letter + '</text>' +
+    '</svg>'
+  );
+}
+
 function upsertAppUser(u) {
   const key = 'user_' + u.user_id;
   const pos = { lat: u.latitude, lng: u.longitude };
+  const name = u.nickname || 'App User';
   if (markers[key]) {
     markers[key].setPosition(pos);
   } else {
     markers[key] = new google.maps.Marker({
       position: pos,
       map: map,
-      title: u.nickname || 'App User',
+      title: name,
       icon: {
-        path: google.maps.SymbolPath.CIRCLE,
-        scale: 10,
-        fillColor: '#9b59b6',
-        fillOpacity: 1,
-        strokeColor: '#fff',
-        strokeWeight: 2
+        url: createPinSVG('#9b59b6', (name[0] || '?').toUpperCase()),
+        scaledSize: new google.maps.Size(36, 36),
+        anchor: new google.maps.Point(18, 18)
       },
-      label: { text: (u.nickname || '?')[0].toUpperCase(), color: '#fff', fontSize: '11px', fontWeight: 'bold' }
+      label: { text: name, color: '#fff', fontSize: '11px', fontWeight: '600',
+               className: 'map-label' }
     });
   }
 }
@@ -209,22 +256,21 @@ function upsertAppUser(u) {
 function upsertGuest(g) {
   const key = 'guest_' + g.guest_id;
   const pos = { lat: g.latitude, lng: g.longitude };
+  const name = g.display_name || 'Guest';
   if (markers[key]) {
     markers[key].setPosition(pos);
   } else {
     markers[key] = new google.maps.Marker({
       position: pos,
       map: map,
-      title: g.display_name || 'Guest',
+      title: name,
       icon: {
-        path: google.maps.SymbolPath.CIRCLE,
-        scale: 10,
-        fillColor: '#2ecc71',
-        fillOpacity: 1,
-        strokeColor: '#fff',
-        strokeWeight: 2
+        url: createPinSVG('#2ecc71', (name[0] || '?').toUpperCase()),
+        scaledSize: new google.maps.Size(36, 36),
+        anchor: new google.maps.Point(18, 18)
       },
-      label: { text: (g.display_name || '?')[0].toUpperCase(), color: '#fff', fontSize: '11px', fontWeight: 'bold' }
+      label: { text: name, color: '#fff', fontSize: '11px', fontWeight: '600',
+               className: 'map-label' }
     });
   }
 }
@@ -240,14 +286,12 @@ function upsertSelf(lat, lng) {
       map: map,
       title: 'You',
       icon: {
-        path: google.maps.SymbolPath.CIRCLE,
-        scale: 10,
-        fillColor: '#4a9eff',
-        fillOpacity: 1,
-        strokeColor: '#fff',
-        strokeWeight: 2
+        url: createPinSVG('#4a9eff', 'Y'),
+        scaledSize: new google.maps.Size(36, 36),
+        anchor: new google.maps.Point(18, 18)
       },
-      label: { text: 'You', color: '#fff', fontSize: '9px', fontWeight: 'bold' }
+      label: { text: 'You', color: '#fff', fontSize: '11px', fontWeight: '600',
+               className: 'map-label' }
     });
   }
 }
@@ -261,7 +305,8 @@ function removeMarker(key) {
 
 function updateCount() {
   const count = Object.keys(markers).filter(k => k !== 'self').length;
-  document.getElementById('people-count').textContent = count + ' people sharing location';
+  const label = count === 1 ? '1 person sharing location' : count + ' people sharing location';
+  document.getElementById('people-count').textContent = label;
 }
 
 function startGeolocation() {
@@ -269,6 +314,9 @@ function startGeolocation() {
     showStatus('Geolocation not supported');
     return;
   }
+  // Clear old watch if any
+  if (geoWatchId != null) navigator.geolocation.clearWatch(geoWatchId);
+
   geoWatchId = navigator.geolocation.watchPosition(
     (pos) => {
       const lat = pos.coords.latitude;
@@ -287,8 +335,29 @@ function showStatus(text) {
   const el = document.getElementById('status');
   el.textContent = text;
   el.style.display = 'block';
-  setTimeout(() => { el.style.display = 'none'; }, 4000);
+  clearTimeout(showStatus._timer);
+  showStatus._timer = setTimeout(() => { el.style.display = 'none'; }, 4000);
 }
+
+// Handle page visibility changes — reconnect WS when page comes back
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && myGuestId && myName) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      connectWebSocket();
+    }
+    // Re-send current location immediately
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition((pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        upsertSelf(lat, lng);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'guest_location', latitude: lat, longitude: lng }));
+        }
+      }, () => {}, { enableHighAccuracy: true, maximumAge: 5000 });
+    }
+  }
+});
 </script>
 <script async src="https://maps.googleapis.com/maps/api/js?key={{GOOGLE_MAPS_API_KEY}}&callback=Function.prototype"></script>
 </body>
