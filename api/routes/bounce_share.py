@@ -282,7 +282,7 @@ async def _build_initial_state(db: AsyncSession, bounce_id: int) -> dict:
         app_users.append({
             "user_id": share.user_id,
             "nickname": user.nickname,
-            "profile_picture": user.profile_picture or user.instagram_profile_pic,
+            "profile_picture": user.profile_picture or user.instagram_profile_pic or user.profile_picture_1,
             "latitude": share.latitude,
             "longitude": share.longitude
         })

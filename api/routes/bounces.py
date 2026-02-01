@@ -1659,7 +1659,7 @@ async def update_location(
         "bounce_id": bounce_id,
         "user_id": current_user.id,
         "nickname": current_user.nickname,
-        "profile_picture": current_user.profile_picture or current_user.instagram_profile_pic,
+        "profile_picture": current_user.profile_picture or current_user.instagram_profile_pic or current_user.profile_picture_1,
         "latitude": location.latitude,
         "longitude": location.longitude
     }
