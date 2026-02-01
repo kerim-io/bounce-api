@@ -31,6 +31,13 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-se
 .venue-pin-circle .initial{font-size:20px;font-weight:bold;color:#fff}
 .venue-pin-label{margin-top:2px;background:rgba(0,0,0,.7);color:#fff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:600;white-space:nowrap;max-width:100px;overflow:hidden;text-overflow:ellipsis}
 .venue-pin-tail{width:2px;height:8px;background:#4a9eff;margin-top:-1px}
+/* User pin overlay (for profile pic users) */
+.user-pin{position:absolute;transform:translate(-50%,-50%);pointer-events:none;display:flex;align-items:center;justify-content:center}
+.user-pin-circle{width:52px;height:52px;border-radius:50%;border:3px solid #9b59b6;overflow:hidden;background:#555;box-shadow:0 2px 6px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center}
+.user-pin-circle.guest{border-color:#2ecc71}
+.user-pin-circle.self-pin{border-color:#4a9eff}
+.user-pin-circle img{width:100%;height:100%;object-fit:cover}
+.user-pin-circle .initial{font-size:22px;font-weight:bold;color:#fff}
 /* Bottom sheet */
 #bottom-sheet{position:fixed;bottom:0;left:0;right:0;background:#1a1a1a;border-radius:20px 20px 0 0;z-index:600;transform:translateY(100%);transition:transform .3s ease;max-height:55vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
 #bottom-sheet.open{transform:translateY(0)}
@@ -246,7 +253,7 @@ function initMap() {
       center: { lat: VENUE_LAT, lng: VENUE_LNG },
       zoom: 16,
       disableDefaultUI: true,
-      zoomControl: true,
+      zoomControl: false,
       gestureHandling: 'greedy',
       styles: [
         { elementType: 'geometry', stylers: [{ color: '#1d2c4d' }] },
@@ -327,7 +334,11 @@ function openSheet() {
     const p = peopleData[key];
     const color = p.type === 'app' ? colors.app : colors.guest;
     const initial = (p.name[0] || '?').toUpperCase();
-    html += '<div class="person-row"><div class="person-avatar" style="background:' + color + '">' + initial + '</div><div class="person-name">' + p.name + '</div></div>';
+    if (p.pic) {
+      html += '<div class="person-row"><div class="person-avatar" style="border:2px solid ' + color + ';padding:0;overflow:hidden"><img src="' + p.pic + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%" onerror="this.parentNode.style.background=\'' + color + '\';this.parentNode.innerHTML=\'' + initial + '\'"></div><div class="person-name">' + p.name + '</div></div>';
+    } else {
+      html += '<div class="person-row"><div class="person-avatar" style="background:' + color + '">' + initial + '</div><div class="person-name">' + p.name + '</div></div>';
+    }
   });
 
   if (!html) {
@@ -424,37 +435,103 @@ function createPinSVG(color, letter) {
   );
 }
 
+// Custom OverlayView for user pins with profile pictures
+let UserPinOverlay;
+function defineUserPinOverlay() {
+  if (UserPinOverlay) return;
+  UserPinOverlay = class extends google.maps.OverlayView {
+    constructor(position, photoUrl, initial, borderColor) {
+      super();
+      this.position = position;
+      this.photoUrl = photoUrl;
+      this.initial = initial;
+      this.borderColor = borderColor;
+      this.div = null;
+    }
+    onAdd() {
+      this.div = document.createElement('div');
+      this.div.className = 'user-pin';
+      const circle = document.createElement('div');
+      circle.className = 'user-pin-circle';
+      circle.style.borderColor = this.borderColor;
+      if (this.photoUrl) {
+        const img = document.createElement('img');
+        img.src = this.photoUrl;
+        img.onerror = () => {
+          circle.innerHTML = '<span class="initial">' + this.initial + '</span>';
+        };
+        circle.appendChild(img);
+      } else {
+        circle.innerHTML = '<span class="initial">' + this.initial + '</span>';
+      }
+      this.div.appendChild(circle);
+      const panes = this.getPanes();
+      panes.overlayMouseTarget.appendChild(this.div);
+    }
+    draw() {
+      const projection = this.getProjection();
+      const pos = projection.fromLatLngToDivPixel(this.position);
+      if (pos) {
+        this.div.style.left = pos.x + 'px';
+        this.div.style.top = pos.y + 'px';
+      }
+    }
+    setPosition(pos) {
+      this.position = pos;
+      this.draw();
+    }
+    onRemove() {
+      if (this.div) { this.div.parentNode.removeChild(this.div); this.div = null; }
+    }
+  };
+}
+
+function createUserPin(lat, lng, photoUrl, initial, borderColor) {
+  defineUserPinOverlay();
+  const pin = new UserPinOverlay(
+    new google.maps.LatLng(lat, lng),
+    photoUrl, initial, borderColor
+  );
+  pin.setMap(map);
+  return pin;
+}
+
 function upsertAppUser(u) {
   const key = 'user_' + u.user_id;
-  const pos = { lat: u.latitude, lng: u.longitude };
   const name = u.nickname || 'App User';
-  peopleData[key] = { name: name, type: 'app' };
+  const pic = u.profile_picture || null;
+  peopleData[key] = { name: name, type: 'app', pic: pic };
   if (markers[key]) {
-    markers[key].setPosition(pos);
+    markers[key].setPosition(new google.maps.LatLng(u.latitude, u.longitude));
   } else {
-    markers[key] = new google.maps.Marker({
-      position: pos,
-      map: map,
-      title: name,
-      icon: {
-        url: createPinSVG('#9b59b6', (name[0] || '?').toUpperCase()),
-        scaledSize: new google.maps.Size(52, 52),
-        anchor: new google.maps.Point(26, 26)
-      }
-    });
+    if (pic) {
+      markers[key] = createUserPin(u.latitude, u.longitude, pic, (name[0] || '?').toUpperCase(), '#9b59b6');
+    } else {
+      markers[key] = new google.maps.Marker({
+        position: { lat: u.latitude, lng: u.longitude },
+        map: map,
+        title: name,
+        icon: {
+          url: createPinSVG('#9b59b6', (name[0] || '?').toUpperCase()),
+          scaledSize: new google.maps.Size(52, 52),
+          anchor: new google.maps.Point(26, 26)
+        }
+      });
+    }
   }
 }
 
 function upsertGuest(g) {
   const key = 'guest_' + g.guest_id;
-  const pos = { lat: g.latitude, lng: g.longitude };
   const name = g.display_name || 'Guest';
   peopleData[key] = { name: name, type: 'guest' };
   if (markers[key]) {
-    markers[key].setPosition(pos);
+    markers[key].setPosition(typeof markers[key].setPosition === 'function' && markers[key] instanceof google.maps.Marker
+      ? { lat: g.latitude, lng: g.longitude }
+      : new google.maps.LatLng(g.latitude, g.longitude));
   } else {
     markers[key] = new google.maps.Marker({
-      position: pos,
+      position: { lat: g.latitude, lng: g.longitude },
       map: map,
       title: name,
       icon: {
@@ -468,13 +545,16 @@ function upsertGuest(g) {
 
 function upsertSelf(lat, lng) {
   const key = 'self';
-  const pos = { lat, lng };
   if (markers[key]) {
-    markers[key].setPosition(pos);
+    if (markers[key] instanceof google.maps.Marker) {
+      markers[key].setPosition({ lat, lng });
+    } else {
+      markers[key].setPosition(new google.maps.LatLng(lat, lng));
+    }
   } else {
     const initial = myName ? myName[0].toUpperCase() : 'Y';
     markers[key] = new google.maps.Marker({
-      position: pos,
+      position: { lat, lng },
       map: map,
       title: 'You',
       icon: {
@@ -492,6 +572,9 @@ function removeMarker(key) {
     delete markers[key];
   }
 }
+
+// Also update bottom sheet people list to show profile pics
+
 
 function updateCount() {
   const count = Object.keys(markers).filter(k => k !== 'self').length;
