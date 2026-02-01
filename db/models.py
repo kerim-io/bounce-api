@@ -353,6 +353,7 @@ class BounceGuestLocation(Base):
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
     is_sharing = Column(Boolean, default=True, nullable=False)
+    is_connected = Column(Boolean, default=False, nullable=False, server_default="false")
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     # Relationships

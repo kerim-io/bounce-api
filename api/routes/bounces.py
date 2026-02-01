@@ -1497,6 +1497,7 @@ class GuestLocationInfo(BaseModel):
     display_name: str
     latitude: float
     longitude: float
+    is_sharing: bool
     updated_at: datetime
 
     class Config:
@@ -1726,11 +1727,11 @@ async def get_shared_locations(
     ]
 
     # Get guest locations
+    # Get connected guests (regardless of whether they're sharing location)
     guest_result = await db.execute(
         select(BounceGuestLocation).where(
             BounceGuestLocation.bounce_id == bounce_id,
-            BounceGuestLocation.is_sharing == True,
-            BounceGuestLocation.latitude != 0
+            BounceGuestLocation.is_connected == True
         )
     )
     guest_rows = guest_result.scalars().all()
@@ -1741,6 +1742,7 @@ async def get_shared_locations(
             display_name=g.display_name,
             latitude=g.latitude,
             longitude=g.longitude,
+            is_sharing=g.is_sharing,
             updated_at=g.updated_at
         )
         for g in guest_rows
