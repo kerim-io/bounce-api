@@ -100,9 +100,11 @@ async def bounce_share_page(
     html = html.replace("{{VENUE_PHOTO_URL}}", venue_photo_url)
     html = html.replace("{{GOOGLE_MAPS_API_KEY}}", settings.GOOGLE_MAPS_API_KEY)
 
-    # Derive WS base from the incoming request
-    base = str(request.base_url).rstrip("/")
-    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
+    # Derive WS base — respect X-Forwarded-Proto (Railway/proxies terminate TLS)
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("host") or request.base_url.hostname
+    ws_proto = "wss" if proto == "https" else "ws"
+    ws_base = f"{ws_proto}://{host}"
     html = html.replace("{{WS_BASE}}", ws_base)
 
     return HTMLResponse(content=html)
