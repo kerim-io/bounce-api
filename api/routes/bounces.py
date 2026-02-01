@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 import logging
 
 from db.database import get_async_session
-from db.models import Bounce, BounceInvite, BounceAttendee, BounceLocationShare, User, Place, GooglePic
+from db.models import Bounce, BounceInvite, BounceAttendee, BounceLocationShare, BounceGuestLocation, User, Place, GooglePic
 from api.dependencies import get_current_user
 from services.geofence import haversine_distance
 from services.places import get_place_with_photos
@@ -1492,6 +1492,22 @@ class LocationShareInfo(BaseModel):
         from_attributes = True
 
 
+class GuestLocationInfo(BaseModel):
+    guest_id: str
+    display_name: str
+    latitude: float
+    longitude: float
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class LocationsResponse(BaseModel):
+    locations: List[LocationShareInfo]
+    guests: List[GuestLocationInfo]
+
+
 async def get_bounce_participants(db: AsyncSession, bounce_id: int) -> List[int]:
     """Get all user IDs who should receive location updates (creator + invited users)"""
     # Get bounce creator
@@ -1674,7 +1690,7 @@ async def update_location(
     return {"success": True}
 
 
-@router.get("/{bounce_id}/locations", response_model=List[LocationShareInfo])
+@router.get("/{bounce_id}/locations", response_model=LocationsResponse)
 async def get_shared_locations(
     bounce_id: int,
     current_user: User = Depends(get_current_user),
@@ -1709,4 +1725,25 @@ async def get_shared_locations(
         for share, user in rows
     ]
 
-    return locations
+    # Get guest locations
+    guest_result = await db.execute(
+        select(BounceGuestLocation).where(
+            BounceGuestLocation.bounce_id == bounce_id,
+            BounceGuestLocation.is_sharing == True,
+            BounceGuestLocation.latitude != 0
+        )
+    )
+    guest_rows = guest_result.scalars().all()
+
+    guests = [
+        GuestLocationInfo(
+            guest_id=g.guest_id,
+            display_name=g.display_name,
+            latitude=g.latitude,
+            longitude=g.longitude,
+            updated_at=g.updated_at
+        )
+        for g in guest_rows
+    ]
+
+    return LocationsResponse(locations=locations, guests=guests)
