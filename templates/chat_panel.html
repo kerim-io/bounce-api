@@ -6,7 +6,7 @@
 #feed-header{display:flex;align-items:center;justify-content:space-between;padding:0 16px 8px;flex-shrink:0;cursor:grab;touch-action:none}
 #feed-header .feed-title{font-family:system-ui,-apple-system,sans-serif;font-size:15px;font-weight:700;color:#fff;letter-spacing:.3px}
 #feed-header .feed-badge{background:#4a9eff;color:#fff;font-size:10px;border-radius:50%;min-width:18px;height:18px;display:none;align-items:center;justify-content:center;font-weight:700;padding:0 5px;font-family:system-ui,-apple-system,sans-serif}
-#feed-messages{flex:1;overflow-y:auto;padding:4px 16px;display:flex;flex-direction:column;gap:4px;-webkit-overflow-scrolling:touch;min-height:0}
+#feed-messages{flex:1;overflow-y:auto;padding:4px 16px;display:flex;flex-direction:column;gap:4px;-webkit-overflow-scrolling:touch;min-height:0;cursor:grab}
 .feed-item{display:flex;gap:8px;align-items:flex-start;padding:5px 0;animation:feedIn .3s ease}
 @keyframes feedIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 .feed-avatar{width:28px;height:28px;border-radius:50%;background:#333;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:12px;font-weight:700;color:#fff;font-family:system-ui,-apple-system,sans-serif}
@@ -64,8 +64,9 @@ function initFeedSheet() {
   handleEl = document.getElementById('feed-handle-bar');
   var headerEl = document.getElementById('feed-header');
   var messagesEl = document.getElementById('feed-messages');
+  var inputBar = document.getElementById('feed-input-bar');
 
-  // Touch events — handle + header are always draggable
+  // Touch events — handle + header always drag the sheet
   handleEl.addEventListener('touchstart', onDragStart, { passive: false });
   headerEl.addEventListener('touchstart', onDragStart, { passive: false });
   document.addEventListener('touchmove', onDragMove, { passive: false });
@@ -77,10 +78,14 @@ function initFeedSheet() {
   document.addEventListener('mousemove', onDragMove);
   document.addEventListener('mouseup', onDragEnd);
 
-  // Messages area: drag down when scrolled to top
-  messagesEl.addEventListener('touchstart', onMessagesTouchStart, { passive: true });
-  messagesEl.addEventListener('touchmove', onMessagesTouchMove, { passive: false });
-  messagesEl.addEventListener('touchend', onMessagesTouchEnd);
+  // Messages area + input bar: smart drag vs scroll
+  messagesEl.addEventListener('touchstart', onContentTouchStart, { passive: true });
+  messagesEl.addEventListener('touchmove', onContentTouchMove, { passive: false });
+  messagesEl.addEventListener('touchend', onContentTouchEnd);
+  inputBar.addEventListener('touchstart', onDragStart, { passive: false });
+
+  // Restore persisted chat
+  restoreChat();
 
   // Set initial snap
   snapTo('med', false);
@@ -171,27 +176,48 @@ function onDragEnd(e) {
   }
 }
 
-// Messages scroll-to-drag: when scrolled to top and user drags down, drag the sheet
-var msgDragging = false;
-var msgStartY = 0;
-var msgLocked = false; // true = locked to scroll, false = might transition to sheet drag
+// Content area smart drag: drag sheet when not at full detent,
+// scroll normally at full detent (with pull-down-at-top to collapse)
+var contentDragging = false;
+var contentStartY = 0;
+var contentLocked = false; // locked to scroll (don't drag sheet)
+var DRAG_DEAD_ZONE = 8; // px before deciding drag vs scroll
+var contentDecided = false;
 
-function onMessagesTouchStart(e) {
-  msgDragging = false;
-  msgLocked = false;
-  msgStartY = e.touches[0].clientY;
+function onContentTouchStart(e) {
+  contentDragging = false;
+  contentLocked = false;
+  contentDecided = false;
+  contentStartY = e.touches[0].clientY;
 }
 
-function onMessagesTouchMove(e) {
-  if (msgLocked) return; // normal scroll
+function onContentTouchMove(e) {
+  if (contentLocked) return; // normal scroll mode
   var messagesEl = document.getElementById('feed-messages');
   var clientY = e.touches[0].clientY;
-  var dy = clientY - msgStartY; // positive = finger moving down
+  var dy = clientY - contentStartY; // positive = finger down
+  var absDy = Math.abs(dy);
 
-  if (dy > 0 && messagesEl.scrollTop <= 0) {
-    // At top and dragging down — hijack into sheet drag
-    if (!msgDragging) {
-      msgDragging = true;
+  // Wait for dead zone before deciding
+  if (!contentDecided && absDy < DRAG_DEAD_ZONE) return;
+  contentDecided = true;
+
+  // NOT at full detent → all vertical movement drags the sheet
+  if (feedSnap !== 'full' && !contentDragging && !contentLocked) {
+    contentDragging = true;
+    dragging = true;
+    dragStartY = clientY;
+    dragLastY = clientY;
+    dragLastTime = Date.now();
+    dragVelocity = 0;
+    dragStartH = sheetEl.offsetHeight;
+    sheetEl.style.transition = 'none';
+  }
+
+  // AT full detent → only hijack to sheet drag when at scroll top dragging down
+  if (feedSnap === 'full' && !contentDragging) {
+    if (dy > 0 && messagesEl.scrollTop <= 0) {
+      contentDragging = true;
       dragging = true;
       dragStartY = clientY;
       dragLastY = clientY;
@@ -199,20 +225,49 @@ function onMessagesTouchMove(e) {
       dragVelocity = 0;
       dragStartH = sheetEl.offsetHeight;
       sheetEl.style.transition = 'none';
+    } else {
+      contentLocked = true; // normal scroll
+      return;
     }
+  }
+
+  if (contentDragging) {
     if (e.cancelable) e.preventDefault();
     onDragMove(e);
-  } else if (dy < -5) {
-    // Scrolling up into content — lock to normal scroll
-    msgLocked = true;
   }
 }
 
-function onMessagesTouchEnd(e) {
-  if (msgDragging) {
-    msgDragging = false;
+function onContentTouchEnd(e) {
+  if (contentDragging) {
+    contentDragging = false;
     onDragEnd(e);
   }
+}
+
+// --- Chat persistence via localStorage ---
+var CHAT_STORAGE_KEY = 'bounce_chat_' + SHARE_TOKEN;
+var MAX_STORED_MSGS = 200;
+
+function saveChatMsg(obj) {
+  try {
+    var msgs = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY) || '[]');
+    msgs.push(obj);
+    if (msgs.length > MAX_STORED_MSGS) msgs = msgs.slice(-MAX_STORED_MSGS);
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(msgs));
+  } catch(e) {}
+}
+
+function restoreChat() {
+  try {
+    var msgs = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY) || '[]');
+    msgs.forEach(function(m) {
+      if (m.system) {
+        renderSystemMsg(m.text);
+      } else {
+        renderChatMsg(m.sender, m.text, m.isAi, m.isSelf, m.timestamp);
+      }
+    });
+  } catch(e) {}
 }
 
 function updateFeedBadge() {
@@ -244,7 +299,8 @@ function formatFeedTime(ts) {
   return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;
 }
 
-function appendChatMsg(sender, text, isAi, isSelf, timestamp) {
+// Render only (no save) — used by restoreChat
+function renderChatMsg(sender, text, isAi, isSelf, timestamp) {
   var container = document.getElementById('feed-messages');
   var item = document.createElement('div');
   item.className = 'feed-item';
@@ -288,8 +344,22 @@ function appendChatMsg(sender, text, isAi, isSelf, timestamp) {
   item.appendChild(body);
   container.appendChild(item);
   scrollFeed();
+}
 
-  // If collapsed, bump unread and auto-expand to med
+function renderSystemMsg(text) {
+  var container = document.getElementById('feed-messages');
+  var div = document.createElement('div');
+  div.className = 'feed-system';
+  div.textContent = text;
+  container.appendChild(div);
+  scrollFeed();
+}
+
+function appendChatMsg(sender, text, isAi, isSelf, timestamp) {
+  renderChatMsg(sender, text, isAi, isSelf, timestamp);
+  saveChatMsg({ sender: sender, text: text, isAi: isAi, isSelf: isSelf, timestamp: timestamp });
+
+  // If collapsed, bump unread
   if (feedSnap === 'min') {
     unreadCount++;
     updateFeedBadge();
@@ -297,12 +367,8 @@ function appendChatMsg(sender, text, isAi, isSelf, timestamp) {
 }
 
 function appendSystemMsg(text) {
-  var container = document.getElementById('feed-messages');
-  var div = document.createElement('div');
-  div.className = 'feed-system';
-  div.textContent = text;
-  container.appendChild(div);
-  scrollFeed();
+  renderSystemMsg(text);
+  saveChatMsg({ system: true, text: text });
 }
 
 function sendChat() {
@@ -333,6 +399,9 @@ handleMessage = function(msg) {
     appendChatMsg(msg.sender, msg.text, msg.is_ai, false, msg.timestamp);
   }
   if (msg.type === 'chat_history') {
+    // Server sends full history — replace local cache and re-render
+    document.getElementById('feed-messages').innerHTML = '';
+    try { localStorage.removeItem(CHAT_STORAGE_KEY); } catch(e) {}
     (msg.messages || []).forEach(function(m) {
       appendChatMsg(m.sender, m.text, m.is_ai, false, m.timestamp);
     });
