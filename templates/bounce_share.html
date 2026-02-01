@@ -8,19 +8,25 @@
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#111;color:#fff;height:100%;overflow:hidden;position:fixed;width:100%}
 #map{width:100%;height:100%}
-#overlay{position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;z-index:1000}
-.card{background:#1a1a1a;border-radius:16px;padding:32px;max-width:380px;width:90%;text-align:center}
-.card h1{font-size:20px;margin-bottom:4px;color:#fff}
-.card .venue{font-size:14px;color:#aaa;margin-bottom:6px}
-.card .msg{font-size:15px;color:#ccc;margin-bottom:20px;font-style:italic}
-.card .by{font-size:13px;color:#888;margin-bottom:20px}
-.card input{width:100%;padding:14px;border-radius:10px;border:1px solid #333;background:#222;color:#fff;font-size:16px;outline:none;margin-bottom:16px}
-.card input:focus{border-color:#4a9eff}
-.card button{width:100%;padding:14px;border-radius:10px;border:none;background:#4a9eff;color:#fff;font-size:16px;font-weight:600;cursor:pointer}
-.card button:disabled{opacity:.5;cursor:not-allowed}
-#info-bar{position:fixed;top:0;left:0;right:0;background:rgba(17,17,17,.9);backdrop-filter:blur(10px);padding:12px 16px;z-index:500;display:none;border-bottom:1px solid #222}
+#overlay{position:fixed;inset:0;background:#111;display:flex;flex-direction:column;align-items:center;padding:60px 24px 40px;z-index:1000;overflow-y:auto}
+.join-photos{display:flex;align-items:center;justify-content:center;gap:16px;margin-bottom:32px}
+.join-venue-pic,.join-inviter-pic{width:80px;height:80px;border-radius:50%;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#333;flex-shrink:0}
+.join-venue-pic{border:2px solid #fff}
+.join-venue-pic img,.join-inviter-pic img{width:100%;height:100%;object-fit:cover}
+.join-inviter-pic{border:2px solid #4a9eff}
+.join-initial{font-size:28px;font-weight:bold;color:#fff}
+.join-content{width:100%;max-width:380px}
+.join-venue-name{font-size:22px;font-weight:700;color:#fff;margin-bottom:4px}
+.join-venue-address{font-size:14px;color:#aaa;margin-bottom:16px}
+.join-with{font-size:15px;color:#ccc;margin-bottom:24px}
+.join-content input{width:100%;padding:14px;border-radius:10px;border:1px solid #333;background:#222;color:#fff;font-size:16px;outline:none;margin-bottom:16px}
+.join-content input:focus{border-color:#4a9eff}
+.join-content button{width:100%;padding:14px;border-radius:10px;border:none;background:#4a9eff;color:#fff;font-size:16px;font-weight:600;cursor:pointer}
+.join-content button:disabled{opacity:.5;cursor:not-allowed}
+#info-bar{position:fixed;top:0;left:0;right:0;background:rgba(17,17,17,.9);backdrop-filter:blur(10px);padding:12px 16px;z-index:500;display:none;border-bottom:1px solid #222;justify-content:space-between;align-items:center}
 #info-bar .title{font-size:16px;font-weight:600}
 #info-bar .sub{font-size:12px;color:#aaa}
+#leave-btn{background:#ff4757;color:#fff;border:none;padding:6px 14px;border-radius:16px;font-size:13px;font-weight:600;cursor:pointer}
 #status{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:rgba(17,17,17,.9);padding:8px 16px;border-radius:20px;font-size:12px;color:#aaa;z-index:500;display:none}
 #loc-btn{position:fixed;bottom:24px;right:16px;width:44px;height:44px;border-radius:50%;background:#1a1a1a;border:1px solid #333;display:none;align-items:center;justify-content:center;z-index:500;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.4)}
 #loc-btn svg{width:22px;height:22px;fill:#4a9eff}
@@ -32,7 +38,7 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-se
 .venue-pin-label{margin-top:2px;background:rgba(0,0,0,.7);color:#fff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:600;white-space:nowrap;max-width:100px;overflow:hidden;text-overflow:ellipsis}
 .venue-pin-tail{width:2px;height:8px;background:#4a9eff;margin-top:-1px}
 /* User pin overlay (for profile pic users) */
-.user-pin{position:absolute;transform:translate(-50%,-50%);pointer-events:none;display:flex;align-items:center;justify-content:center}
+.user-pin{position:absolute;transform:translate(-50%,-50%);display:flex;align-items:center;justify-content:center;cursor:pointer}
 .user-pin-circle{width:52px;height:52px;border-radius:50%;border:3px solid #9b59b6;overflow:hidden;background:#555;box-shadow:0 2px 6px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center}
 .user-pin-circle.guest{border-color:#2ecc71}
 .user-pin-circle.self-pin{border-color:#4a9eff}
@@ -58,24 +64,44 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-se
 #bottom-sheet .person-avatar{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;color:#fff;flex-shrink:0}
 #bottom-sheet .person-name{font-size:14px}
 #sheet-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:550;display:none}
+/* User sheet */
+#user-sheet{position:fixed;bottom:0;left:0;right:0;background:#1a1a1a;border-radius:20px 20px 0 0;z-index:700;transform:translateY(100%);transition:transform .3s ease;padding:20px 24px 32px}
+#user-sheet.open{transform:translateY(0)}
+#user-sheet-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:650;display:none}
+.us-close{position:absolute;top:12px;right:12px;width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,.15);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:none;color:#fff;font-size:15px;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.us-pic{width:72px;height:72px;border-radius:50%;overflow:hidden;background:#333;margin:0 auto 12px;display:flex;align-items:center;justify-content:center}
+.us-pic img{width:100%;height:100%;object-fit:cover}
+.us-pic .initial{font-size:28px;font-weight:bold;color:#fff}
+.us-name{font-size:20px;font-weight:700;color:#fff;text-align:center;margin-bottom:16px}
+.us-stats{display:flex;justify-content:center;gap:32px}
+.us-stat{text-align:center}
+.us-stat-num{font-size:18px;font-weight:700;color:#fff}
+.us-stat-label{font-size:12px;color:#888;margin-top:2px}
+.us-loading{text-align:center;color:#888;font-size:14px;padding:24px 0}
 </style>
 </head>
 <body>
 
 <div id="overlay">
-  <div class="card">
-    <h1>{{VENUE_NAME}}</h1>
-    <div class="venue">{{VENUE_ADDRESS}}</div>
-    <div class="msg">{{MESSAGE}}</div>
-    <div class="by">by {{CREATOR_NAME}}</div>
+  <div class="join-photos">
+    <div class="join-venue-pic" id="join-venue-pic"></div>
+    <div class="join-inviter-pic" id="join-inviter-pic"></div>
+  </div>
+  <div class="join-content">
+    <div class="join-venue-name">{{VENUE_NAME}}</div>
+    <div class="join-venue-address">{{VENUE_ADDRESS}}</div>
+    <div class="join-with">with {{CREATOR_NAME}}</div>
     <input id="name-input" type="text" placeholder="Enter your name" maxlength="50" autocomplete="off">
-    <button id="join-btn" disabled onclick="joinBounce()">Join Map</button>
+    <button id="join-btn" disabled onclick="joinBounce()">Join Bounce</button>
   </div>
 </div>
 
 <div id="info-bar">
-  <div class="title">{{VENUE_NAME}}</div>
-  <div class="sub" id="people-count"></div>
+  <div>
+    <div class="title">{{VENUE_NAME}}</div>
+    <div class="sub" id="people-count"></div>
+  </div>
+  <button id="leave-btn" onclick="leaveBounce()">Leave</button>
 </div>
 
 <div id="status"></div>
@@ -108,6 +134,17 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-se
   </div>
 </div>
 
+<div id="user-sheet-backdrop" onclick="closeUserSheet()"></div>
+<div id="user-sheet">
+  <button class="us-close" onclick="closeUserSheet()">&times;</button>
+  <div class="us-pic" id="us-pic"></div>
+  <div class="us-name" id="us-name"></div>
+  <div class="us-stats">
+    <div class="us-stat"><div class="us-stat-num" id="us-followers">-</div><div class="us-stat-label">Followers</div></div>
+    <div class="us-stat"><div class="us-stat-num" id="us-following">-</div><div class="us-stat-label">Following</div></div>
+  </div>
+</div>
+
 <script>
 const VENUE_LAT = {{LATITUDE}};
 const VENUE_LNG = {{LONGITUDE}};
@@ -115,6 +152,8 @@ const SHARE_TOKEN = "{{SHARE_TOKEN}}";
 const WS_BASE = "{{WS_BASE}}";
 const _RAW_VENUE_PHOTO = "{{VENUE_PHOTO_URL}}";
 const VENUE_PHOTO_URL = _RAW_VENUE_PHOTO && !_RAW_VENUE_PHOTO.startsWith('data:') ? '/bounce/img-proxy?url=' + encodeURIComponent(_RAW_VENUE_PHOTO) : _RAW_VENUE_PHOTO;
+const _RAW_CREATOR_PIC = "{{CREATOR_PROFILE_PIC}}";
+const CREATOR_PIC_URL = _RAW_CREATOR_PIC && !_RAW_CREATOR_PIC.startsWith('data:') ? '/bounce/img-proxy?url=' + encodeURIComponent(_RAW_CREATOR_PIC) : _RAW_CREATOR_PIC;
 const VENUE_NAME_STR = "{{VENUE_NAME}}";
 const VENUE_ADDRESS_STR = "{{VENUE_ADDRESS}}";
 const CREATOR_NAME_STR = "{{CREATOR_NAME}}";
@@ -141,6 +180,30 @@ nameInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && nameInput.value.trim()) joinBounce();
 });
 
+// Populate join screen photos
+(function() {
+  const venuePicEl = document.getElementById('join-venue-pic');
+  if (VENUE_PHOTO_URL) {
+    venuePicEl.innerHTML = '<img src="' + VENUE_PHOTO_URL + '" onerror="this.parentNode.innerHTML=\'<span class=join-initial>' + (VENUE_NAME_STR[0] || '?').toUpperCase() + '</span>\'">';
+  } else {
+    venuePicEl.innerHTML = '<span class="join-initial">' + (VENUE_NAME_STR[0] || '?').toUpperCase() + '</span>';
+  }
+  const inviterPicEl = document.getElementById('join-inviter-pic');
+  if (CREATOR_PIC_URL) {
+    inviterPicEl.innerHTML = '<img src="' + CREATOR_PIC_URL + '" onerror="this.parentNode.innerHTML=\'<span class=join-initial>' + (CREATOR_NAME_STR[0] || '?').toUpperCase() + '</span>\'">';
+  } else {
+    inviterPicEl.innerHTML = '<span class="join-initial">' + (CREATOR_NAME_STR[0] || '?').toUpperCase() + '</span>';
+  }
+})();
+
+function leaveBounce() {
+  if (geoWatchId != null) navigator.geolocation.clearWatch(geoWatchId);
+  if (ws) ws.close();
+  localStorage.removeItem(STORAGE_KEY_ID);
+  localStorage.removeItem(STORAGE_KEY_NAME);
+  location.reload();
+}
+
 function joinBounce() {
   myName = nameInput.value.trim();
   if (!myName) return;
@@ -153,7 +216,7 @@ function joinBounce() {
   localStorage.setItem(STORAGE_KEY_NAME, myName);
 
   document.getElementById('overlay').style.display = 'none';
-  document.getElementById('info-bar').style.display = 'block';
+  document.getElementById('info-bar').style.display = 'flex';
   waitForMaps(() => initMap());
 }
 
@@ -165,7 +228,7 @@ function joinBounce() {
     myName = savedName;
     myGuestId = savedId;
     document.getElementById('overlay').style.display = 'none';
-    document.getElementById('info-bar').style.display = 'block';
+    document.getElementById('info-bar').style.display = 'flex';
     waitForMaps(() => initMap());
   } else {
     nameInput.focus();
@@ -291,7 +354,7 @@ function initMap() {
     venuePin.setMap(map);
 
     // Close sheet when tapping map
-    map.addListener('click', closeSheet);
+    map.addListener('click', () => { closeSheet(); closeUserSheet(); });
   }
 
   document.getElementById('loc-btn').style.display = 'flex';
@@ -354,6 +417,48 @@ function openSheet() {
 function closeSheet() {
   document.getElementById('bottom-sheet').classList.remove('open');
   document.getElementById('sheet-backdrop').style.display = 'none';
+}
+
+function openUserSheet(userId) {
+  const sheet = document.getElementById('user-sheet');
+  const picEl = document.getElementById('us-pic');
+  const nameEl = document.getElementById('us-name');
+  const followersEl = document.getElementById('us-followers');
+  const followingEl = document.getElementById('us-following');
+
+  // Show immediately with cached data from peopleData
+  const cached = peopleData['user_' + userId];
+  if (cached && cached.pic) {
+    picEl.innerHTML = '<img src="' + cached.pic + '" onerror="this.parentNode.innerHTML=\'<span class=initial>' + (cached.name[0] || '?').toUpperCase() + '</span>\'">';
+  } else {
+    const letter = cached ? (cached.name[0] || '?').toUpperCase() : '?';
+    picEl.innerHTML = '<span class="initial">' + letter + '</span>';
+  }
+  nameEl.textContent = cached ? cached.name : 'Loading...';
+  followersEl.textContent = '-';
+  followingEl.textContent = '-';
+
+  document.getElementById('user-sheet-backdrop').style.display = 'block';
+  sheet.classList.add('open');
+
+  // Fetch full profile from server
+  fetch('/bounce/share/' + SHARE_TOKEN + '/user/' + userId)
+    .then(r => r.ok ? r.json() : Promise.reject())
+    .then(data => {
+      nameEl.textContent = data.nickname;
+      followersEl.textContent = data.followers_count;
+      followingEl.textContent = data.following_count;
+      if (data.profile_picture) {
+        const url = proxyUrl(data.profile_picture);
+        picEl.innerHTML = '<img src="' + url + '" onerror="this.parentNode.innerHTML=\'<span class=initial>' + (data.nickname[0] || '?').toUpperCase() + '</span>\'">';
+      }
+    })
+    .catch(() => {});
+}
+
+function closeUserSheet() {
+  document.getElementById('user-sheet').classList.remove('open');
+  document.getElementById('user-sheet-backdrop').style.display = 'none';
 }
 
 function connectWebSocket() {
@@ -448,17 +553,21 @@ let UserPinOverlay;
 function defineUserPinOverlay() {
   if (UserPinOverlay) return;
   UserPinOverlay = class extends google.maps.OverlayView {
-    constructor(position, photoUrl, initial, borderColor) {
+    constructor(position, photoUrl, initial, borderColor, onClick) {
       super();
       this.position = position;
       this.photoUrl = photoUrl;
       this.initial = initial;
       this.borderColor = borderColor;
+      this.onClick = onClick;
       this.div = null;
     }
     onAdd() {
       this.div = document.createElement('div');
       this.div.className = 'user-pin';
+      if (this.onClick) {
+        this.div.addEventListener('click', (e) => { e.stopPropagation(); this.onClick(); });
+      }
       const circle = document.createElement('div');
       circle.className = 'user-pin-circle';
       circle.style.borderColor = this.borderColor;
@@ -494,11 +603,11 @@ function defineUserPinOverlay() {
   };
 }
 
-function createUserPin(lat, lng, photoUrl, initial, borderColor) {
+function createUserPin(lat, lng, photoUrl, initial, borderColor, onClick) {
   defineUserPinOverlay();
   const pin = new UserPinOverlay(
     new google.maps.LatLng(lat, lng),
-    photoUrl, initial, borderColor
+    photoUrl, initial, borderColor, onClick
   );
   pin.setMap(map);
   return pin;
@@ -515,14 +624,15 @@ function upsertAppUser(u) {
   const key = 'user_' + u.user_id;
   const name = u.nickname || 'App User';
   const pic = proxyUrl(u.profile_picture) || null;
-  peopleData[key] = { name: name, type: 'app', pic: pic };
+  peopleData[key] = { name: name, type: 'app', pic: pic, user_id: u.user_id };
   if (markers[key]) {
     markers[key].setPosition(new google.maps.LatLng(u.latitude, u.longitude));
   } else {
+    const tapHandler = () => openUserSheet(u.user_id);
     if (pic) {
-      markers[key] = createUserPin(u.latitude, u.longitude, pic, (name[0] || '?').toUpperCase(), '#9b59b6');
+      markers[key] = createUserPin(u.latitude, u.longitude, pic, (name[0] || '?').toUpperCase(), '#9b59b6', tapHandler);
     } else {
-      markers[key] = new google.maps.Marker({
+      const marker = new google.maps.Marker({
         position: { lat: u.latitude, lng: u.longitude },
         map: map,
         title: name,
@@ -532,6 +642,8 @@ function upsertAppUser(u) {
           anchor: new google.maps.Point(26, 26)
         }
       });
+      marker.addListener('click', tapHandler);
+      markers[key] = marker;
     }
   }
 }

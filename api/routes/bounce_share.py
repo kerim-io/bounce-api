@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from db.database import get_async_session, create_async_session
-from db.models import Bounce, BounceInvite, BounceLocationShare, BounceGuestLocation, User
+from db.models import Bounce, BounceInvite, BounceLocationShare, BounceGuestLocation, User, Follow
+from sqlalchemy import func
 from api.dependencies import get_current_user
 from api.routes.websocket import manager
 from api.routes.bounces import get_bounce_participants, get_venue_photo_url
@@ -86,6 +87,41 @@ async def image_proxy(url: str = Query(...)):
         raise HTTPException(status_code=502, detail="Failed to fetch image")
 
 
+@router.get("/bounce/share/{share_token}/user/{user_id}")
+async def bounce_share_user_profile(
+    share_token: str,
+    user_id: int,
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Public profile info for a user visible on the shared bounce map."""
+    result = await db.execute(
+        select(Bounce).where(Bounce.share_token == share_token, Bounce.status == 'active')
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Bounce not found or inactive")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    followers_count = (await db.execute(
+        select(func.count()).select_from(Follow).where(Follow.following_id == user_id)
+    )).scalar() or 0
+    following_count = (await db.execute(
+        select(func.count()).select_from(Follow).where(Follow.follower_id == user_id)
+    )).scalar() or 0
+
+    pic = user.profile_picture or user.instagram_profile_pic or user.profile_picture_1 or ""
+    return {
+        "user_id": user.id,
+        "nickname": user.nickname or user.first_name or "User",
+        "profile_picture": pic,
+        "followers_count": followers_count,
+        "following_count": following_count,
+    }
+
+
 @router.get("/bounce/share/{share_token}", response_class=HTMLResponse)
 async def bounce_share_page(
     share_token: str,
@@ -107,6 +143,9 @@ async def bounce_share_page(
     # Fetch venue photo URL
     venue_photo_url = await get_venue_photo_url(db, bounce.places_fk_id) or ""
 
+    # Creator profile picture
+    creator_pic = creator.profile_picture or creator.instagram_profile_pic or creator.profile_picture_1 or ""
+
     # Read the template and inject variables
     import os
     template_path = os.path.join(os.path.dirname(__file__), "..", "..", "templates", "bounce_share.html")
@@ -122,6 +161,7 @@ async def bounce_share_page(
     html = html.replace("{{CREATOR_NAME}}", creator.nickname or creator.first_name or "Someone")
     html = html.replace("{{SHARE_TOKEN}}", share_token)
     html = html.replace("{{VENUE_PHOTO_URL}}", venue_photo_url)
+    html = html.replace("{{CREATOR_PROFILE_PIC}}", creator_pic)
     html = html.replace("{{GOOGLE_MAPS_API_KEY}}", settings.GOOGLE_MAPS_API_KEY)
 
     # Derive WS base — respect X-Forwarded-Proto (Railway/proxies terminate TLS)
