@@ -424,6 +424,13 @@ function handleMessage(msg) {
         updateCount();
       }
       break;
+    case 'guest_left':
+      if (msg.guest_id !== myGuestId) {
+        removeMarker('guest_' + msg.guest_id);
+        delete peopleData['guest_' + msg.guest_id];
+        updateCount();
+      }
+      break;
   }
 }
 
