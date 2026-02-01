@@ -43,8 +43,8 @@ class Settings:
     # Google Maps API
     GOOGLE_MAPS_API_KEY: str = os.getenv("GOOGLE_MAPS_API_KEY", "")
 
-    # Anthropic (AI commentator)
-    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+    # Groq (AI commentator)
+    GROQ_API_KEY: str = os.getenv("GROQ", "")
 
     # Base URL for share links
     BASE_URL: str = os.getenv("BASE_URL", "http://localhost:8000")

@@ -80,7 +80,7 @@ class BounceCommentator:
             except asyncio.CancelledError:
                 break
 
-            if not settings.ANTHROPIC_API_KEY:
+            if not settings.GROQ_API_KEY:
                 continue
 
             now = time.time()
@@ -121,23 +121,24 @@ class BounceCommentator:
 
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
+                "https://api.groq.com/openai/v1/chat/completions",
                 headers={
-                    "x-api-key": settings.ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
+                    "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+                    "Content-Type": "application/json",
                 },
                 json={
-                    "model": "claude-3-5-haiku-latest",
+                    "model": "llama-3.1-8b-instant",
                     "max_tokens": 150,
-                    "system": system,
-                    "messages": [{"role": "user", "content": user}],
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
                 },
             )
             if resp.status_code != 200:
-                logger.warning(f"Anthropic API {resp.status_code}: {resp.text[:200]}")
+                logger.warning(f"Groq API {resp.status_code}: {resp.text[:200]}")
                 return None
-            return resp.json()["content"][0]["text"].strip()
+            return resp.json()["choices"][0]["message"]["content"].strip()
 
     def _system_prompt(self) -> str:
         names = [a["name"] for a in self.attendees.values()]
