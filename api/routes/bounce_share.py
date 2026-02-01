@@ -2,6 +2,7 @@ import secrets
 import json
 import logging
 import hashlib
+import time
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +15,7 @@ from api.dependencies import get_current_user
 from api.routes.websocket import manager
 from api.routes.bounces import get_bounce_participants, get_venue_photo_url
 from core.config import settings
+from services.ai_commentator import get_or_create_commentator, remove_commentator
 
 router = APIRouter(tags=["bounce-share"])
 logger = logging.getLogger(__name__)
@@ -216,6 +218,8 @@ async def bounce_share_page(
         html = html.replace("{{VENUE_SHEET}}", f.read())
     with open(os.path.join(tpl_dir, "user_sheet.html"), "r") as f:
         html = html.replace("{{USER_SHEET}}", f.read())
+    with open(os.path.join(tpl_dir, "chat_panel.html"), "r") as f:
+        html = html.replace("{{CHAT_PANEL}}", f.read())
 
     # Replace template placeholders
     html = html.replace("{{VENUE_NAME}}", bounce.venue_name or "")
@@ -305,6 +309,38 @@ async def bounce_guest_websocket(
         logger.info(f"Sending initial_state to guest '{name}': {len(initial_state.get('app_users', []))} app users, {len(initial_state.get('guests', []))} guests")
         await websocket.send_json(initial_state)
 
+        # Fetch creator name for commentator context
+        creator_result = await db.execute(
+            select(User).where(User.id == bounce.creator_id)
+        )
+        creator_user = creator_result.scalar_one_or_none()
+        creator_name = (creator_user.nickname or creator_user.first_name or "the host") if creator_user else "the host"
+
+        # Init AI commentator
+        commentator = get_or_create_commentator(
+            bounce_id,
+            {
+                "venue_name": bounce.venue_name or "the venue",
+                "venue_address": bounce.venue_address or "",
+                "latitude": bounce.latitude,
+                "longitude": bounce.longitude,
+                "message": bounce.message or "",
+                "creator_name": creator_name,
+            },
+            manager.send_to_bounce,
+        )
+        commentator.attendees[guest_id] = {
+            "name": name, "last_lat": 0, "last_lng": 0, "last_seen": time.time()
+        }
+
+        # Send chat history to late joiner
+        history = commentator.get_history()
+        if history:
+            await websocket.send_json({"type": "chat_history", "messages": history})
+
+        # Notify AI about the join
+        commentator.push_event({"type": "join", "name": name})
+
         # Message loop
         while True:
             raw = await websocket.receive_text()
@@ -369,6 +405,9 @@ async def bounce_guest_websocket(
                 for pid in participants:
                     await manager.send_to_user(pid, loc_msg)
 
+                # Check if guest arrived at venue (for AI commentary)
+                commentator.check_arrival(guest_id, name, lat, lng)
+
             elif msg_type == "guest_stop_sharing":
                 result = await db.execute(
                     select(BounceGuestLocation).where(
@@ -390,6 +429,23 @@ async def bounce_guest_websocket(
                 participants = await get_bounce_participants(db, bounce_id)
                 for pid in participants:
                     await manager.send_to_user(pid, stop_msg)
+
+            elif msg_type == "chat_message":
+                text = (data.get("text") or "").strip()
+                if not text or len(text) > 500:
+                    continue
+
+                chat_msg = {
+                    "type": "chat_message",
+                    "sender": name,
+                    "guest_id": guest_id,
+                    "text": text,
+                    "is_ai": False,
+                    "timestamp": time.time(),
+                }
+                commentator.add_chat(name, text, is_ai=False)
+                await manager.send_to_bounce(bounce_id, chat_msg)
+                commentator.push_event({"type": "chat", "sender": name, "text": text})
 
             elif msg_type == "guest_leave":
                 # Explicit leave — flag so finally block sends guest_left
@@ -431,6 +487,18 @@ async def bounce_guest_websocket(
                 participants = await get_bounce_participants(db, bounce_id)
                 for pid in participants:
                     await manager.send_to_user(pid, notify_msg)
+            except Exception:
+                pass
+
+            # Notify AI commentator about the leave
+            try:
+                from services.ai_commentator import _commentators
+                if bounce_id in _commentators:
+                    c = _commentators[bounce_id]
+                    c.attendees.pop(guest_id, None)
+                    c.push_event({"type": "leave", "name": name})
+                    if not c.attendees:
+                        await remove_commentator(bounce_id)
             except Exception:
                 pass
 
