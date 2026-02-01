@@ -33,14 +33,33 @@ logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)  # Reduce SQL q
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize database
-    await create_db_and_tables()
-    # Start WebSocket Redis subscriber
-    await ws_manager.start_subscriber()
+    import asyncio
+    logger = logging.getLogger(__name__)
+
+    # Initialize database (with timeout so slow DB doesn't block startup)
+    try:
+        await asyncio.wait_for(create_db_and_tables(), timeout=30)
+        logger.info("Database initialized")
+    except asyncio.TimeoutError:
+        logger.error("Database initialization timed out after 30s — continuing anyway")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e} — continuing anyway")
+
+    # Start WebSocket Redis subscriber (non-blocking)
+    try:
+        await asyncio.wait_for(ws_manager.start_subscriber(), timeout=10)
+        logger.info("Redis subscriber started")
+    except asyncio.TimeoutError:
+        logger.warning("Redis subscriber timed out — will retry in background")
+    except Exception as e:
+        logger.warning(f"Redis subscriber failed: {e}")
+
     # Start silent push loop for background location sharing
     await start_silent_push_loop()
     # Instagram 2FA poller - uncomment when ready to use
     # await start_ig_poller()
+
+    logger.info("Application startup complete")
     yield
     # Cleanup
     # await stop_ig_poller()
