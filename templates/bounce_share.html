@@ -6,10 +6,10 @@
 <title>{{VENUE_NAME}} - Bounce</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#111;color:#fff;height:100%;overflow:hidden;position:fixed;width:100%}
+html,body{font-family:system-ui,-apple-system,sans-serif;background:#111;color:#fff;height:100%;overflow:hidden;position:fixed;width:100%}
 #map{width:100%;height:100%}
-#overlay{position:fixed;inset:0;background:#111;display:flex;flex-direction:column;align-items:center;padding:60px 24px 40px;z-index:1000;overflow-y:auto}
-.join-photos{display:flex;align-items:center;justify-content:center;gap:16px;margin-bottom:32px}
+#overlay{position:fixed;inset:0;background:#111;display:flex;flex-direction:column;align-items:flex-start;padding:60px 24px 40px;z-index:1000;overflow-y:auto}
+.join-photos{display:flex;align-items:center;justify-content:flex-start;gap:16px;margin-bottom:32px}
 .join-venue-pic,.join-inviter-pic{width:80px;height:80px;border-radius:50%;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#333;flex-shrink:0}
 .join-venue-pic{border:2px solid #fff}
 .join-venue-pic img,.join-inviter-pic img{width:100%;height:100%;object-fit:cover}
@@ -23,10 +23,7 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-se
 .join-content input:focus{border-color:#4a9eff}
 .join-content button{width:100%;padding:14px;border-radius:10px;border:none;background:#4a9eff;color:#fff;font-size:16px;font-weight:600;cursor:pointer}
 .join-content button:disabled{opacity:.5;cursor:not-allowed}
-.join-countdown{text-align:center;margin-bottom:20px}
-.join-countdown .countdown-label{font-size:13px;color:#888;margin-bottom:6px;font-family:Georgia,'Times New Roman',serif}
-.join-countdown .countdown-time{font-size:28px;font-weight:700;color:#fff;font-family:Georgia,'Times New Roman',serif;letter-spacing:2px}
-.join-countdown .countdown-date{font-size:14px;color:#aaa;margin-top:4px;font-family:Georgia,'Times New Roman',serif}
+.join-bounce-time{font-size:14px;color:#aaa;margin-bottom:16px}
 #info-bar{position:fixed;top:0;left:0;right:0;background:rgba(17,17,17,.9);backdrop-filter:blur(10px);padding:12px 16px;z-index:500;display:none;border-bottom:1px solid #222;justify-content:space-between;align-items:center}
 #info-bar .title{font-size:16px;font-weight:600}
 #info-bar .sub{font-size:12px;color:#aaa}
@@ -39,7 +36,7 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-se
 .venue-pin-circle{width:52px;height:52px;border-radius:50%;border:3px solid #4a9eff;overflow:hidden;background:#555;box-shadow:0 2px 6px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;transition:transform .2s ease}
 .venue-pin.active .venue-pin-circle{transform:scale(1.3)}
 .venue-pin-circle img{width:100%;height:100%;object-fit:cover}
-.venue-pin-circle .initial{font-size:20px;font-weight:bold;color:#fff;font-family:Georgia,'Times New Roman',serif}
+.venue-pin-circle .initial{font-size:20px;font-weight:bold;color:#fff;font-family:system-ui,-apple-system,sans-serif}
 .venue-pin-label{margin-top:2px;background:rgba(0,0,0,.7);color:#fff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:600;white-space:nowrap;max-width:100px;overflow:hidden;text-overflow:ellipsis}
 .venue-pin-tail{width:2px;height:8px;background:#4a9eff;margin-top:-1px}
 /* User pin overlay (for profile pic users) */
@@ -49,7 +46,7 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-se
 .user-pin-circle.guest{border-color:#2ecc71}
 .user-pin-circle.self-pin{border-color:#4a9eff}
 .user-pin-circle img{width:100%;height:100%;object-fit:cover}
-.user-pin-circle .initial{font-size:22px;font-weight:bold;color:#fff;font-family:Georgia,'Times New Roman',serif}
+.user-pin-circle .initial{font-size:22px;font-weight:bold;color:#fff;font-family:system-ui,-apple-system,sans-serif}
 </style>
 </head>
 <body>
@@ -63,11 +60,7 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-se
     <div class="join-venue-name">{{VENUE_NAME}}</div>
     <div class="join-venue-address">{{VENUE_ADDRESS}}</div>
     <div class="join-with">with {{CREATOR_NAME}}</div>
-    <div class="join-countdown" id="join-countdown" style="display:none">
-      <div class="countdown-label">Starts in</div>
-      <div class="countdown-time" id="countdown-time"></div>
-      <div class="countdown-date" id="countdown-date"></div>
-    </div>
+    <div class="join-bounce-time" id="join-bounce-time"></div>
     <input id="name-input" type="text" placeholder="Enter your name" maxlength="50" autocomplete="off">
     <button id="join-btn" disabled onclick="joinBounce()">Join Bounce</button>
   </div>
@@ -150,45 +143,13 @@ nameInput.addEventListener('keydown', (e) => {
   }
 })();
 
-// Future bounce countdown
-let bounceIsLive = IS_NOW;
-let countdownInterval;
+// Show bounce time
 (function() {
-  if (IS_NOW || !BOUNCE_TIME) {
-    bounceIsLive = true;
-    return;
-  }
+  if (!BOUNCE_TIME) return;
   const bounceDate = new Date(BOUNCE_TIME);
-  if (isNaN(bounceDate.getTime())) { bounceIsLive = true; return; }
-
-  const cdEl = document.getElementById('join-countdown');
-  const cdTime = document.getElementById('countdown-time');
-  const cdDate = document.getElementById('countdown-date');
-
-  // Show the date
+  if (isNaN(bounceDate.getTime())) return;
   const opts = { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
-  cdDate.textContent = bounceDate.toLocaleDateString(undefined, opts);
-
-  function updateCountdown() {
-    const now = Date.now();
-    const diff = bounceDate.getTime() - now;
-    if (diff <= 0) {
-      bounceIsLive = true;
-      cdEl.style.display = 'none';
-      clearInterval(countdownInterval);
-      document.getElementById('join-btn').textContent = 'Join Bounce';
-      return;
-    }
-    const h = Math.floor(diff / 3600000);
-    const m = Math.floor((diff % 3600000) / 60000);
-    const s = Math.floor((diff % 60000) / 1000);
-    cdTime.textContent = (h > 0 ? h + 'h ' : '') + (m < 10 ? '0' : '') + m + 'm ' + (s < 10 ? '0' : '') + s + 's';
-  }
-
-  cdEl.style.display = 'block';
-  document.getElementById('join-btn').textContent = 'Join Early';
-  updateCountdown();
-  countdownInterval = setInterval(updateCountdown, 1000);
+  document.getElementById('join-bounce-time').textContent = bounceDate.toLocaleDateString(undefined, opts);
 })();
 
 function leaveBounce() {
@@ -455,7 +416,7 @@ function createPinSVG(color, letter) {
   return 'data:image/svg+xml,' + encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" width="52" height="52" viewBox="0 0 52 52">' +
     '<circle cx="26" cy="26" r="23" fill="' + color + '" stroke="#fff" stroke-width="3"/>' +
-    '<text x="26" y="33" text-anchor="middle" font-family="Georgia,serif" font-size="22" font-weight="bold" fill="#fff">' + letter + '</text>' +
+    '<text x="26" y="33" text-anchor="middle" font-family="system-ui,sans-serif" font-size="22" font-weight="bold" fill="#fff">' + letter + '</text>' +
     '</svg>'
   );
 }

@@ -1,66 +1,134 @@
 <style>
-#chat-panel{position:fixed;bottom:0;left:0;right:0;z-index:400;display:none;flex-direction:column;max-height:45vh;pointer-events:none}
-#feed-header{pointer-events:auto;display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:rgba(17,17,17,.95);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid #222;cursor:pointer}
-#feed-header .feed-title{font-family:Georgia,'Times New Roman',serif;font-size:14px;font-weight:600;color:#fff;letter-spacing:.3px}
-#feed-header .feed-badge{background:#4a9eff;color:#fff;font-size:10px;border-radius:50%;min-width:18px;height:18px;display:none;align-items:center;justify-content:center;font-weight:700;padding:0 5px}
-#feed-header .feed-chevron{color:#666;font-size:18px;transition:transform .25s ease}
-#feed-header .feed-chevron.up{transform:rotate(180deg)}
-#feed-messages{pointer-events:auto;flex:1;overflow-y:auto;padding:6px 16px 4px;background:rgba(17,17,17,.92);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);display:flex;flex-direction:column;gap:4px;-webkit-overflow-scrolling:touch;transition:max-height .3s ease;max-height:0;overflow:hidden}
-#feed-messages.expanded{max-height:30vh;overflow-y:auto}
+#chat-panel{position:fixed;bottom:0;left:0;right:0;z-index:400;display:none;flex-direction:column;pointer-events:none;transition:none}
+#feed-sheet{pointer-events:auto;background:rgba(17,17,17,.96);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-top-left-radius:16px;border-top-right-radius:16px;display:flex;flex-direction:column;overflow:hidden;will-change:transform,height;box-shadow:0 -2px 20px rgba(0,0,0,.5)}
+#feed-handle-bar{padding:10px 0 6px;display:flex;justify-content:center;cursor:grab;touch-action:none;flex-shrink:0}
+#feed-handle-bar .handle{width:36px;height:4px;border-radius:2px;background:#555}
+#feed-header{display:flex;align-items:center;justify-content:space-between;padding:0 16px 8px;flex-shrink:0}
+#feed-header .feed-title{font-family:system-ui,-apple-system,sans-serif;font-size:15px;font-weight:700;color:#fff;letter-spacing:.3px}
+#feed-header .feed-badge{background:#4a9eff;color:#fff;font-size:10px;border-radius:50%;min-width:18px;height:18px;display:none;align-items:center;justify-content:center;font-weight:700;padding:0 5px;font-family:system-ui,-apple-system,sans-serif}
+#feed-messages{flex:1;overflow-y:auto;padding:4px 16px;display:flex;flex-direction:column;gap:4px;-webkit-overflow-scrolling:touch;min-height:0}
 .feed-item{display:flex;gap:8px;align-items:flex-start;padding:5px 0;animation:feedIn .3s ease}
 @keyframes feedIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-.feed-avatar{width:28px;height:28px;border-radius:50%;background:#333;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:12px;font-weight:700;color:#fff;font-family:Georgia,'Times New Roman',serif}
+.feed-avatar{width:28px;height:28px;border-radius:50%;background:#333;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:12px;font-weight:700;color:#fff;font-family:system-ui,-apple-system,sans-serif}
 .feed-avatar.ai{background:rgba(74,158,255,.2);color:#4a9eff}
 .feed-avatar.self{background:#4a9eff;color:#fff}
 .feed-body{flex:1;min-width:0}
-.feed-name{font-size:11px;font-weight:600;color:#4a9eff;margin-bottom:1px;font-family:Georgia,'Times New Roman',serif}
+.feed-name{font-size:11px;font-weight:600;color:#4a9eff;margin-bottom:1px;font-family:system-ui,-apple-system,sans-serif}
 .feed-name.ai{color:#7bb8ff}
 .feed-name.self{color:#fff}
-.feed-text{font-size:13px;line-height:1.35;color:#ccc;word-wrap:break-word}
+.feed-text{font-size:13px;line-height:1.35;color:#ccc;word-wrap:break-word;font-family:system-ui,-apple-system,sans-serif}
 .feed-text.ai{color:#a8cce8;font-style:italic}
 .feed-text.self{color:#fff}
-.feed-system{font-size:11px;color:#555;text-align:center;padding:3px 0;font-family:Georgia,'Times New Roman',serif}
-.feed-time{font-size:10px;color:#444;margin-top:1px}
-#feed-input-bar{pointer-events:auto;display:flex;padding:8px 12px;gap:8px;background:rgba(17,17,17,.98);border-top:1px solid #1a1a1a}
-#feed-input{flex:1;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:20px;padding:9px 14px;color:#fff;font-size:14px;outline:none;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+.feed-system{font-size:11px;color:#555;text-align:center;padding:3px 0;font-family:system-ui,-apple-system,sans-serif}
+.feed-time{font-size:10px;color:#444;margin-top:1px;font-family:system-ui,-apple-system,sans-serif}
+#feed-input-bar{display:flex;padding:8px 12px;gap:8px;border-top:1px solid #222;flex-shrink:0}
+#feed-input{flex:1;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:20px;padding:9px 14px;color:#fff;font-size:14px;outline:none;font-family:system-ui,-apple-system,sans-serif}
 #feed-input:focus{border-color:#4a9eff}
 #feed-input::placeholder{color:#555}
-#feed-send{background:#4a9eff;color:#fff;border:none;border-radius:50%;width:36px;height:36px;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:opacity .2s}
+#feed-send{background:#4a9eff;color:#fff;border:none;border-radius:50%;width:36px;height:36px;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:opacity .2s;font-family:system-ui,-apple-system,sans-serif}
 #feed-send:active{opacity:.7}
 </style>
 
 <div id="chat-panel">
-  <div id="feed-header" onclick="toggleFeed()">
-    <div style="display:flex;align-items:center;gap:8px">
-      <span class="feed-title">Live Feed</span>
-      <span class="feed-badge" id="feed-badge">0</span>
+  <div id="feed-sheet">
+    <div id="feed-handle-bar"><div class="handle"></div></div>
+    <div id="feed-header">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="feed-title">Live Feed</span>
+        <span class="feed-badge" id="feed-badge">0</span>
+      </div>
     </div>
-    <span class="feed-chevron" id="feed-chevron">&#9650;</span>
-  </div>
-  <div id="feed-messages"></div>
-  <div id="feed-input-bar">
-    <input id="feed-input" type="text" placeholder="Say something..." maxlength="500" autocomplete="off">
-    <button id="feed-send" onclick="sendChat()">&#9654;</button>
+    <div id="feed-messages"></div>
+    <div id="feed-input-bar">
+      <input id="feed-input" type="text" placeholder="Say something..." maxlength="500" autocomplete="off">
+      <button id="feed-send" onclick="sendChat()">&#9654;</button>
+    </div>
   </div>
 </div>
 
 <script>
-var feedExpanded = true;
+// Sheet snap heights (fraction of viewport)
+var SNAP_MIN = 0.18;   // collapsed — just header + input
+var SNAP_MED = 0.42;   // medium
+var SNAP_FULL = 0.85;  // full height
+var feedSnap = 'med';   // current snap: 'min', 'med', 'full'
 var unreadCount = 0;
 
-function toggleFeed() {
-  feedExpanded = !feedExpanded;
-  var msgs = document.getElementById('feed-messages');
-  var chev = document.getElementById('feed-chevron');
-  if (feedExpanded) {
-    msgs.classList.add('expanded');
-    chev.classList.add('up');
-    unreadCount = 0;
-    updateFeedBadge();
-    scrollFeed();
+var sheetEl, handleEl;
+var dragging = false;
+var dragStartY = 0;
+var dragStartH = 0;
+
+function initFeedSheet() {
+  sheetEl = document.getElementById('feed-sheet');
+  handleEl = document.getElementById('feed-handle-bar');
+
+  // Touch events
+  handleEl.addEventListener('touchstart', onDragStart, { passive: false });
+  document.addEventListener('touchmove', onDragMove, { passive: false });
+  document.addEventListener('touchend', onDragEnd);
+
+  // Mouse events (desktop)
+  handleEl.addEventListener('mousedown', onDragStart);
+  document.addEventListener('mousemove', onDragMove);
+  document.addEventListener('mouseup', onDragEnd);
+
+  // Set initial snap
+  snapTo('med', false);
+}
+
+function getSnapPx(snap) {
+  var vh = window.innerHeight;
+  if (snap === 'min') return Math.round(vh * SNAP_MIN);
+  if (snap === 'full') return Math.round(vh * SNAP_FULL);
+  return Math.round(vh * SNAP_MED);
+}
+
+function snapTo(snap, animate) {
+  feedSnap = snap;
+  var h = getSnapPx(snap);
+  if (animate !== false) {
+    sheetEl.style.transition = 'height .3s cubic-bezier(.2,.9,.3,1)';
+    setTimeout(function() { sheetEl.style.transition = 'none'; }, 320);
+  }
+  sheetEl.style.height = h + 'px';
+  if (snap !== 'min') scrollFeed();
+}
+
+function onDragStart(e) {
+  dragging = true;
+  dragStartY = e.touches ? e.touches[0].clientY : e.clientY;
+  dragStartH = sheetEl.offsetHeight;
+  sheetEl.style.transition = 'none';
+  if (e.cancelable) e.preventDefault();
+}
+
+function onDragMove(e) {
+  if (!dragging) return;
+  var clientY = e.touches ? e.touches[0].clientY : e.clientY;
+  var dy = dragStartY - clientY; // positive = dragging up = bigger
+  var newH = Math.max(getSnapPx('min'), Math.min(getSnapPx('full'), dragStartH + dy));
+  sheetEl.style.height = newH + 'px';
+  if (e.cancelable) e.preventDefault();
+}
+
+function onDragEnd(e) {
+  if (!dragging) return;
+  dragging = false;
+  var h = sheetEl.offsetHeight;
+  var vh = window.innerHeight;
+  var frac = h / vh;
+
+  // Snap to nearest
+  var midLow = (SNAP_MIN + SNAP_MED) / 2;
+  var midHigh = (SNAP_MED + SNAP_FULL) / 2;
+
+  if (frac < midLow) {
+    snapTo('min', true);
+  } else if (frac < midHigh) {
+    snapTo('med', true);
   } else {
-    msgs.classList.remove('expanded');
-    chev.classList.remove('up');
+    snapTo('full', true);
   }
 }
 
@@ -138,7 +206,8 @@ function appendChatMsg(sender, text, isAi, isSelf, timestamp) {
   container.appendChild(item);
   scrollFeed();
 
-  if (!feedExpanded) {
+  // If collapsed, bump unread and auto-expand to med
+  if (feedSnap === 'min') {
     unreadCount++;
     updateFeedBadge();
   }
@@ -168,13 +237,8 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
-// Start expanded
-(function() {
-  var msgs = document.getElementById('feed-messages');
-  var chev = document.getElementById('feed-chevron');
-  msgs.classList.add('expanded');
-  chev.classList.add('up');
-})();
+// Init sheet on load
+initFeedSheet();
 
 // Monkey-patch handleMessage to intercept chat-related messages
 var _origHandleMessage = handleMessage;
