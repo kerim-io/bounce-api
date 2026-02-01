@@ -300,9 +300,9 @@ function handleMessage(msg) {
 
 function createPinSVG(color, letter) {
   return 'data:image/svg+xml,' + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">' +
-    '<circle cx="18" cy="18" r="16" fill="' + color + '" stroke="#fff" stroke-width="3"/>' +
-    '<text x="18" y="23" text-anchor="middle" font-size="15" font-weight="bold" fill="#fff">' + letter + '</text>' +
+    '<svg xmlns="http://www.w3.org/2000/svg" width="52" height="52" viewBox="0 0 52 52">' +
+    '<circle cx="26" cy="26" r="23" fill="' + color + '" stroke="#fff" stroke-width="3"/>' +
+    '<text x="26" y="33" text-anchor="middle" font-size="22" font-weight="bold" fill="#fff">' + letter + '</text>' +
     '</svg>'
   );
 }
@@ -320,8 +320,8 @@ function upsertAppUser(u) {
       title: name,
       icon: {
         url: createPinSVG('#9b59b6', (name[0] || '?').toUpperCase()),
-        scaledSize: new google.maps.Size(36, 36),
-        anchor: new google.maps.Point(18, 18)
+        scaledSize: new google.maps.Size(52, 52),
+        anchor: new google.maps.Point(26, 26)
       },
       label: { text: name, color: '#fff', fontSize: '11px', fontWeight: '600',
                className: 'map-label' }
@@ -342,8 +342,8 @@ function upsertGuest(g) {
       title: name,
       icon: {
         url: createPinSVG('#2ecc71', (name[0] || '?').toUpperCase()),
-        scaledSize: new google.maps.Size(36, 36),
-        anchor: new google.maps.Point(18, 18)
+        scaledSize: new google.maps.Size(52, 52),
+        anchor: new google.maps.Point(26, 26)
       },
       label: { text: name, color: '#fff', fontSize: '11px', fontWeight: '600',
                className: 'map-label' }
@@ -363,8 +363,8 @@ function upsertSelf(lat, lng) {
       title: 'You',
       icon: {
         url: createPinSVG('#4a9eff', 'Y'),
-        scaledSize: new google.maps.Size(36, 36),
-        anchor: new google.maps.Point(18, 18)
+        scaledSize: new google.maps.Size(52, 52),
+        anchor: new google.maps.Point(26, 26)
       },
       label: { text: 'You', color: '#fff', fontSize: '11px', fontWeight: '600',
                className: 'map-label' }
