@@ -138,17 +138,7 @@ function openSheet() {
       listEl.innerHTML = html;
     })
     .catch(function() {
-      // Fallback to live-location-only data
-      var html = selfHtml;
-      Object.keys(peopleData).forEach(function(key) {
-        var p = peopleData[key];
-        var a = { type: p.type, nickname: p.name, profile_picture: p.pic || '', is_creator: false };
-        if (p.type === 'app' && p.user_id) a.user_id = p.user_id;
-        if (p.type === 'guest') a.guest_id = key.replace('guest_', '');
-        html += buildAttendeeRow(a, colors);
-      });
-      if (!html) html = '<div style="color:#666;font-size:13px;padding:8px 0">No attendees yet</div>';
-      listEl.innerHTML = html;
+      listEl.innerHTML = selfHtml + '<div style="color:#666;font-size:13px;padding:8px 0">Failed to load attendees</div>';
     });
 }
 
