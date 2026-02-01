@@ -220,6 +220,68 @@ async def update_notification_preferences(
     )
 
 
+@router.post("/test-push")
+async def test_push_notification(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Send a test push notification to diagnose APNs issues"""
+    from services.apns_service import get_apns_service, NotificationPayload, NotificationType
+    from services.redis import increment_badge_count
+
+    diagnostics = {}
+
+    # 1. Check APNs service init
+    try:
+        apns = await get_apns_service()
+        diagnostics["apns_initialized"] = apns._initialized
+        diagnostics["has_private_key"] = apns._private_key is not None
+        diagnostics["has_client"] = apns._client is not None
+    except Exception as e:
+        diagnostics["apns_init_error"] = str(e)
+        return diagnostics
+
+    # 2. Check device tokens
+    tokens = await apns._get_user_tokens(db, current_user.id, NotificationType.BOUNCE_INVITE)
+    diagnostics["active_tokens"] = len(tokens)
+    diagnostics["tokens"] = [
+        {"token": t.device_token[:20] + "...", "sandbox": t.is_sandbox, "active": t.is_active}
+        for t in tokens
+    ]
+
+    if not tokens:
+        diagnostics["error"] = "No active device tokens found"
+        return diagnostics
+
+    # 3. Try sending
+    payload = NotificationPayload(
+        notification_type=NotificationType.BOUNCE_INVITE,
+        title="Test Push",
+        body="If you see this, APNs is working",
+        actor_id=current_user.id,
+        actor_nickname=current_user.nickname or "Test",
+        actor_profile_picture=None,
+    )
+
+    try:
+        badge_count = await increment_badge_count(current_user.id)
+        diagnostics["badge_count"] = badge_count
+    except Exception as e:
+        diagnostics["redis_error"] = str(e)
+        badge_count = 1
+
+    aps_payload = apns._build_aps_payload(payload, badge_count)
+    diagnostics["aps_payload"] = aps_payload
+
+    results = []
+    for token in tokens:
+        sent, error = await apns._send_to_token(token.device_token, token.is_sandbox, aps_payload)
+        results.append({"token": token.device_token[:20] + "...", "sent": sent, "error": error})
+    diagnostics["send_results"] = results
+
+    return diagnostics
+
+
 @router.post("/badge/reset")
 async def reset_badge(
     current_user: User = Depends(get_current_user),
