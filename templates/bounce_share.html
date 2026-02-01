@@ -500,6 +500,7 @@ function upsertAppUser(u) {
   const key = 'user_' + u.user_id;
   const name = u.nickname || 'App User';
   const pic = u.profile_picture || null;
+  console.log('[bounce-ws] app user', u.user_id, name, 'pic:', pic ? pic.substring(0, 80) + '...' : 'none');
   peopleData[key] = { name: name, type: 'app', pic: pic };
   if (markers[key]) {
     markers[key].setPosition(new google.maps.LatLng(u.latitude, u.longitude));
