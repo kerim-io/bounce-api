@@ -391,7 +391,7 @@ let UserPinOverlay;
 function defineUserPinOverlay() {
   if (UserPinOverlay) return;
   UserPinOverlay = class extends google.maps.OverlayView {
-    constructor(position, photoUrl, initial, borderColor, onClick, pixelOffsetX) {
+    constructor(position, photoUrl, initial, borderColor, onClick, pixelOffsetX, zIndex) {
       super();
       this.position = position;
       this.photoUrl = photoUrl;
@@ -399,11 +399,13 @@ function defineUserPinOverlay() {
       this.borderColor = borderColor;
       this.onClick = onClick;
       this.pixelOffsetX = pixelOffsetX || 0;
+      this.zIndex = zIndex || 0;
       this.div = null;
     }
     onAdd() {
       this.div = document.createElement('div');
       this.div.className = 'user-pin';
+      this.div.style.zIndex = this.zIndex;
       if (this.onClick) {
         this.div.addEventListener('click', (e) => { e.stopPropagation(); this.onClick(); });
       }
@@ -446,11 +448,11 @@ function defineUserPinOverlay() {
   };
 }
 
-function createUserPin(lat, lng, photoUrl, initial, borderColor, onClick, pixelOffsetX) {
+function createUserPin(lat, lng, photoUrl, initial, borderColor, onClick, pixelOffsetX, zIndex) {
   defineUserPinOverlay();
   const pin = new UserPinOverlay(
     new google.maps.LatLng(lat, lng),
-    photoUrl, initial, borderColor, onClick, pixelOffsetX
+    photoUrl, initial, borderColor, onClick, pixelOffsetX, zIndex
   );
   pin.setMap(map);
   return pin;
@@ -459,10 +461,10 @@ function createUserPin(lat, lng, photoUrl, initial, borderColor, onClick, pixelO
 // Track real positions for collision detection (lat/lng before any offset)
 var pinPositions = {}; // key -> {lat, lng}
 var PIN_SIZE = 52;
-var PIN_OVERLAP = 20; // pixels of overlap between adjacent pins
+var PIN_OVERLAP = 5; // ~10% overlap to show intent
 var PIN_STEP = PIN_SIZE - PIN_OVERLAP; // horizontal step per pin
 
-// Count how many existing pins share the same spot, return pixel X offset
+// Count how many existing pins share the same spot, return {ox, zIdx}
 function getPixelOffset(lat, lng, myKey) {
   var threshold = 0.00015;
   var sameSpot = [];
@@ -474,12 +476,13 @@ function getPixelOffset(lat, lng, myKey) {
     var p = pinPositions[k];
     if (Math.abs(lat - p.lat) + Math.abs(lng - p.lng) < threshold) sameSpot.push(k);
   });
-  if (sameSpot.length === 0) return 0;
-  // My index in the cluster (I'm being added after existing ones)
+  if (sameSpot.length === 0) return { ox: 0, zIdx: 0 };
   var idx = sameSpot.length;
   var total = idx + 1;
-  // Center the group: offsets are -N/2*step ... +N/2*step
-  return (idx - (total - 1) / 2) * PIN_STEP;
+  return {
+    ox: (idx - (total - 1) / 2) * PIN_STEP,
+    zIdx: idx // higher index = on top, creates the cut-in stack
+  };
 }
 
 // Proxy external URLs through our backend to avoid CORS/CORP blocks
@@ -495,25 +498,26 @@ function upsertAppUser(u) {
   const pic = proxyUrl(u.profile_picture) || null;
   peopleData[key] = { name: name, type: 'app', pic: pic, user_id: u.user_id };
   pinPositions[key] = { lat: u.latitude, lng: u.longitude };
-  var ox = getPixelOffset(u.latitude, u.longitude, key);
+  var spread = getPixelOffset(u.latitude, u.longitude, key);
   if (markers[key]) {
     markers[key].setPosition(new google.maps.LatLng(u.latitude, u.longitude));
     if (typeof markers[key].setPixelOffsetX === 'function') {
-      markers[key].setPixelOffsetX(ox);
+      markers[key].setPixelOffsetX(spread.ox);
     }
   } else {
     const tapHandler = () => openUserSheet(u.user_id);
     if (pic) {
-      markers[key] = createUserPin(u.latitude, u.longitude, pic, (name[0] || '?').toUpperCase(), '#9b59b6', tapHandler, ox);
+      markers[key] = createUserPin(u.latitude, u.longitude, pic, (name[0] || '?').toUpperCase(), '#9b59b6', tapHandler, spread.ox, spread.zIdx);
     } else {
       const marker = new google.maps.Marker({
         position: { lat: u.latitude, lng: u.longitude },
         map: map,
         title: name,
+        zIndex: spread.zIdx,
         icon: {
           url: createPinSVG('#9b59b6', (name[0] || '?').toUpperCase()),
           scaledSize: new google.maps.Size(52, 52),
-          anchor: new google.maps.Point(26 - ox, 26)
+          anchor: new google.maps.Point(26 - spread.ox, 26)
         }
       });
       marker.addListener('click', tapHandler);
@@ -527,7 +531,7 @@ function upsertGuest(g) {
   const name = g.display_name || 'Guest';
   peopleData[key] = { name: name, type: 'guest' };
   pinPositions[key] = { lat: g.latitude, lng: g.longitude };
-  var ox = getPixelOffset(g.latitude, g.longitude, key);
+  var spread = getPixelOffset(g.latitude, g.longitude, key);
   if (markers[key]) {
     markers[key].setPosition(new google.maps.LatLng(g.latitude, g.longitude));
   } else {
@@ -535,10 +539,11 @@ function upsertGuest(g) {
       position: { lat: g.latitude, lng: g.longitude },
       map: map,
       title: name,
+      zIndex: spread.zIdx,
       icon: {
         url: createPinSVG('#2ecc71', (name[0] || '?').toUpperCase()),
         scaledSize: new google.maps.Size(52, 52),
-        anchor: new google.maps.Point(26 - ox, 26)
+        anchor: new google.maps.Point(26 - spread.ox, 26)
       }
     });
   }
@@ -548,7 +553,7 @@ function upsertSelf(lat, lng) {
   console.log('[bounce-geo] upsertSelf', lat, lng);
   const key = 'self';
   pinPositions[key] = { lat: lat, lng: lng };
-  var ox = getPixelOffset(lat, lng, key);
+  var spread = getPixelOffset(lat, lng, key);
   if (markers[key]) {
     if (markers[key] instanceof google.maps.Marker) {
       markers[key].setPosition({ lat: lat, lng: lng });
@@ -561,10 +566,11 @@ function upsertSelf(lat, lng) {
       position: { lat: lat, lng: lng },
       map: map,
       title: 'You',
+      zIndex: spread.zIdx,
       icon: {
         url: createPinSVG('#4a9eff', initial),
         scaledSize: new google.maps.Size(52, 52),
-        anchor: new google.maps.Point(26 - ox, 26)
+        anchor: new google.maps.Point(26 - spread.ox, 26)
       }
     });
   }
