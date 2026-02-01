@@ -1,7 +1,7 @@
 # Multi-stage build for BitBasel FastAPI Backend
 
 # Stage 1: Builder
-FROM python:3.11.2-slim as builder
+FROM python:3.11.2-slim AS builder
 
 # Set working directory
 WORKDIR /app
