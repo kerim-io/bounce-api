@@ -518,7 +518,7 @@ async def places_text_search(
         "locationBias": {
             "circle": {
                 "center": {"latitude": lat, "longitude": lng},
-                "radiusMeters": float(radius),
+                "radius": float(radius),
             }
         },
     }
