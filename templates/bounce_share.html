@@ -546,23 +546,7 @@ function upsertAppUser(u) {
     }
   } else {
     const tapHandler = () => openUserSheet(u.user_id);
-    if (pic) {
-      markers[key] = createUserPin(u.latitude, u.longitude, pic, (name[0] || '?').toUpperCase(), '#9b59b6', tapHandler, spread.ox, spread.zIdx);
-    } else {
-      const marker = new google.maps.Marker({
-        position: { lat: u.latitude, lng: u.longitude },
-        map: map,
-        title: name,
-        zIndex: spread.zIdx,
-        icon: {
-          url: createPinSVG('#9b59b6', (name[0] || '?').toUpperCase()),
-          scaledSize: new google.maps.Size(52, 52),
-          anchor: new google.maps.Point(26 - spread.ox, 26)
-        }
-      });
-      marker.addListener('click', tapHandler);
-      markers[key] = marker;
-    }
+    markers[key] = createUserPin(u.latitude, u.longitude, pic, (name[0] || '?').toUpperCase(), '#9b59b6', tapHandler, spread.ox, spread.zIdx);
   }
 }
 
@@ -574,20 +558,10 @@ function upsertGuest(g) {
   var spread = getPixelOffset(g.latitude, g.longitude, key);
   if (markers[key]) {
     markers[key].setPosition(new google.maps.LatLng(g.latitude, g.longitude));
+    if (typeof markers[key].setPixelOffsetX === 'function') markers[key].setPixelOffsetX(spread.ox);
   } else {
     const tapHandler = () => openGuestUserSheet(name);
-    markers[key] = new google.maps.Marker({
-      position: { lat: g.latitude, lng: g.longitude },
-      map: map,
-      title: name,
-      zIndex: spread.zIdx,
-      icon: {
-        url: createPinSVG('#2ecc71', (name[0] || '?').toUpperCase()),
-        scaledSize: new google.maps.Size(52, 52),
-        anchor: new google.maps.Point(26 - spread.ox, 26)
-      }
-    });
-    markers[key].addListener('click', tapHandler);
+    markers[key] = createUserPin(g.latitude, g.longitude, null, (name[0] || '?').toUpperCase(), '#2ecc71', tapHandler, spread.ox, spread.zIdx);
   }
 }
 
@@ -597,24 +571,11 @@ function upsertSelf(lat, lng) {
   pinPositions[key] = { lat: lat, lng: lng };
   var spread = getPixelOffset(lat, lng, key);
   if (markers[key]) {
-    if (markers[key] instanceof google.maps.Marker) {
-      markers[key].setPosition({ lat: lat, lng: lng });
-    } else {
-      markers[key].setPosition(new google.maps.LatLng(lat, lng));
-    }
+    markers[key].setPosition(new google.maps.LatLng(lat, lng));
+    if (typeof markers[key].setPixelOffsetX === 'function') markers[key].setPixelOffsetX(spread.ox);
   } else {
     const initial = myName ? myName[0].toUpperCase() : 'Y';
-    markers[key] = new google.maps.Marker({
-      position: { lat: lat, lng: lng },
-      map: map,
-      title: 'You',
-      zIndex: spread.zIdx,
-      icon: {
-        url: createPinSVG('#4a9eff', initial),
-        scaledSize: new google.maps.Size(52, 52),
-        anchor: new google.maps.Point(26 - spread.ox, 26)
-      }
-    });
+    markers[key] = createUserPin(lat, lng, null, initial, '#4a9eff', null, spread.ox, spread.zIdx);
   }
 }
 
