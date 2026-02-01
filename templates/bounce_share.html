@@ -182,8 +182,9 @@ function joinBounce() {
   waitForMaps(() => initMap());
 }
 
-// Auto-join if returning user
-(function() {
+// Auto-join if returning user (deferred until full DOM is parsed,
+// because #chat-panel is injected after this script block)
+function tryAutoJoin() {
   const savedName = localStorage.getItem(STORAGE_KEY_NAME);
   const savedId = localStorage.getItem(STORAGE_KEY_ID);
   if (savedName && savedId) {
@@ -196,7 +197,12 @@ function joinBounce() {
   } else {
     nameInput.focus();
   }
-})();
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', tryAutoJoin);
+} else {
+  tryAutoJoin();
+}
 
 function waitForMaps(cb) {
   if (typeof google !== 'undefined' && google.maps) { cb(); return; }
