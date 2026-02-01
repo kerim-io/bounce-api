@@ -44,40 +44,6 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-se
 .user-pin-circle.self-pin{border-color:#4a9eff}
 .user-pin-circle img{width:100%;height:100%;object-fit:cover}
 .user-pin-circle .initial{font-size:22px;font-weight:bold;color:#fff}
-/* Bottom sheet */
-#bottom-sheet{position:fixed;bottom:0;left:0;right:0;background:#1a1a1a;border-radius:20px 20px 0 0;z-index:600;transform:translateY(100%);transition:transform .3s ease;max-height:55vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
-#bottom-sheet.open{transform:translateY(0)}
-#bottom-sheet .handle{width:36px;height:4px;background:#444;border-radius:2px;margin:10px auto}
-#bottom-sheet .sheet-content{padding:0 20px 24px}
-#bottom-sheet .sheet-header{display:flex;align-items:center;gap:12px;margin-bottom:12px}
-#bottom-sheet .sheet-photo{width:48px;height:48px;border-radius:50%;overflow:hidden;background:#333;flex-shrink:0;display:flex;align-items:center;justify-content:center}
-#bottom-sheet .sheet-photo img{width:100%;height:100%;object-fit:cover}
-#bottom-sheet .sheet-photo .initial{font-size:18px;font-weight:bold;color:#fff}
-#bottom-sheet .sheet-info h2{font-size:18px;margin-bottom:2px}
-#bottom-sheet .sheet-info p{font-size:13px;color:#aaa;margin:0}
-#bottom-sheet .sheet-message{font-size:14px;color:#ccc;font-style:italic;margin-bottom:14px;padding:10px;background:#222;border-radius:10px}
-#bottom-sheet .sheet-meta{font-size:12px;color:#888;display:flex;gap:16px;margin-bottom:14px}
-#bottom-sheet .sheet-people{margin-top:4px}
-#bottom-sheet .sheet-people h3{font-size:13px;color:#888;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px}
-#bottom-sheet .person-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #222}
-#bottom-sheet .person-row:last-child{border-bottom:none}
-#bottom-sheet .person-avatar{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;color:#fff;flex-shrink:0}
-#bottom-sheet .person-name{font-size:14px}
-#sheet-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:550;display:none}
-/* User sheet */
-#user-sheet{position:fixed;bottom:0;left:0;right:0;background:#1a1a1a;border-radius:20px 20px 0 0;z-index:700;transform:translateY(100%);transition:transform .3s ease;padding:20px 24px 32px}
-#user-sheet.open{transform:translateY(0)}
-#user-sheet-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:650;display:none}
-.us-close{position:absolute;top:12px;right:12px;width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,.15);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:none;color:#fff;font-size:15px;display:flex;align-items:center;justify-content:center;cursor:pointer}
-.us-pic{width:72px;height:72px;border-radius:50%;overflow:hidden;background:#333;margin:0 auto 12px;display:flex;align-items:center;justify-content:center}
-.us-pic img{width:100%;height:100%;object-fit:cover}
-.us-pic .initial{font-size:28px;font-weight:bold;color:#fff}
-.us-name{font-size:20px;font-weight:700;color:#fff;text-align:center;margin-bottom:16px}
-.us-stats{display:flex;justify-content:center;gap:32px}
-.us-stat{text-align:center}
-.us-stat-num{font-size:18px;font-weight:700;color:#fff}
-.us-stat-label{font-size:12px;color:#888;margin-top:2px}
-.us-loading{text-align:center;color:#888;font-size:14px;padding:24px 0}
 </style>
 </head>
 <body>
@@ -112,38 +78,9 @@ html,body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-se
   <svg viewBox="0 0 24 24"><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.994 8.994 0 0013 3.06V1h-2v2.06A8.994 8.994 0 003.06 11H1v2h2.06A8.994 8.994 0 0011 20.94V23h2v-2.06A8.994 8.994 0 0020.94 13H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg>
 </div>
 
-<div id="sheet-backdrop" onclick="closeSheet()"></div>
-<div id="bottom-sheet">
-  <div class="handle"></div>
-  <div class="sheet-content">
-    <div class="sheet-header">
-      <div class="sheet-photo" id="sheet-photo"></div>
-      <div class="sheet-info">
-        <h2 id="sheet-venue-name"></h2>
-        <p id="sheet-venue-address"></p>
-      </div>
-    </div>
-    <div class="sheet-message" id="sheet-message"></div>
-    <div class="sheet-meta">
-      <span id="sheet-creator"></span>
-    </div>
-    <div class="sheet-people">
-      <h3>Sharing Location</h3>
-      <div id="sheet-people-list"></div>
-    </div>
-  </div>
-</div>
+{{VENUE_SHEET}}
 
-<div id="user-sheet-backdrop" onclick="closeUserSheet()"></div>
-<div id="user-sheet">
-  <button class="us-close" onclick="closeUserSheet()">&times;</button>
-  <div class="us-pic" id="us-pic"></div>
-  <div class="us-name" id="us-name"></div>
-  <div class="us-stats">
-    <div class="us-stat"><div class="us-stat-num" id="us-followers">-</div><div class="us-stat-label">Followers</div></div>
-    <div class="us-stat"><div class="us-stat-num" id="us-following">-</div><div class="us-stat-label">Following</div></div>
-  </div>
-</div>
+{{USER_SHEET}}
 
 <script>
 const VENUE_LAT = {{LATITUDE}};
@@ -360,133 +297,6 @@ function initMap() {
   document.getElementById('loc-btn').style.display = 'flex';
   connectWebSocket();
   startGeolocation();
-}
-
-// Bottom sheet
-function openSheet() {
-  // Populate sheet
-  const photoEl = document.getElementById('sheet-photo');
-  if (VENUE_PHOTO_URL) {
-    photoEl.innerHTML = '<img src="' + VENUE_PHOTO_URL + '" onerror="this.parentNode.innerHTML=\'<span class=initial>' + (VENUE_NAME_STR[0] || '?').toUpperCase() + '</span>\'">';
-  } else {
-    photoEl.innerHTML = '<span class="initial">' + (VENUE_NAME_STR[0] || '?').toUpperCase() + '</span>';
-  }
-  document.getElementById('sheet-venue-name').textContent = VENUE_NAME_STR;
-  document.getElementById('sheet-venue-address').textContent = VENUE_ADDRESS_STR;
-
-  const msgEl = document.getElementById('sheet-message');
-  if (MESSAGE_STR) {
-    msgEl.textContent = '"' + MESSAGE_STR + '"';
-    msgEl.style.display = 'block';
-  } else {
-    msgEl.style.display = 'none';
-  }
-
-  document.getElementById('sheet-creator').textContent = 'by ' + CREATOR_NAME_STR;
-
-  // People list
-  const listEl = document.getElementById('sheet-people-list');
-  const colors = { app: '#9b59b6', guest: '#2ecc71', self: '#4a9eff' };
-  let html = '';
-
-  // Add self
-  if (myName) {
-    html += '<div class="person-row"><div class="person-avatar" style="background:' + colors.self + '">Y</div><div class="person-name">You (' + myName + ')</div></div>';
-  }
-
-  Object.keys(peopleData).forEach(key => {
-    const p = peopleData[key];
-    const color = p.type === 'app' ? colors.app : colors.guest;
-    const initial = (p.name[0] || '?').toUpperCase();
-    const tap = p.type === 'app' && p.user_id ? 'onclick="closeSheet();openUserSheet(' + p.user_id + ')"' : 'onclick="closeSheet();openGuestUserSheet(\'' + p.name.replace(/'/g, "\\'") + '\')"';
-    if (p.pic) {
-      html += '<div class="person-row" style="cursor:pointer" ' + tap + '><div class="person-avatar" style="border:2px solid ' + color + ';padding:0;overflow:hidden"><img src="' + p.pic + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%" onerror="this.parentNode.style.background=\'' + color + '\';this.parentNode.innerHTML=\'' + initial + '\'"></div><div class="person-name">' + p.name + '</div></div>';
-    } else {
-      html += '<div class="person-row" style="cursor:pointer" ' + tap + '><div class="person-avatar" style="background:' + color + '">' + initial + '</div><div class="person-name">' + p.name + '</div></div>';
-    }
-  });
-
-  if (!html) {
-    html = '<div style="color:#666;font-size:13px;padding:8px 0">No one else sharing yet</div>';
-  }
-  listEl.innerHTML = html;
-
-  document.getElementById('sheet-backdrop').style.display = 'block';
-  document.getElementById('bottom-sheet').classList.add('open');
-}
-
-function closeSheet() {
-  document.getElementById('bottom-sheet').classList.remove('open');
-  document.getElementById('sheet-backdrop').style.display = 'none';
-}
-
-function openUserSheet(userId) {
-  const sheet = document.getElementById('user-sheet');
-  const picEl = document.getElementById('us-pic');
-  const nameEl = document.getElementById('us-name');
-  const followersEl = document.getElementById('us-followers');
-  const followingEl = document.getElementById('us-following');
-
-  // Show immediately with cached data from peopleData
-  const cached = peopleData['user_' + userId];
-  if (cached && cached.pic) {
-    picEl.innerHTML = '<img src="' + cached.pic + '" onerror="this.parentNode.innerHTML=\'<span class=initial>' + (cached.name[0] || '?').toUpperCase() + '</span>\'">';
-  } else {
-    const letter = cached ? (cached.name[0] || '?').toUpperCase() : '?';
-    picEl.innerHTML = '<span class="initial">' + letter + '</span>';
-  }
-  nameEl.textContent = cached ? cached.name : 'Loading...';
-  followersEl.textContent = '-';
-  followingEl.textContent = '-';
-  document.querySelector('.us-stats').style.display = 'flex';
-  var gMsg = document.getElementById('us-guest-msg');
-  if (gMsg) gMsg.style.display = 'none';
-
-  document.getElementById('user-sheet-backdrop').style.display = 'block';
-  sheet.classList.add('open');
-
-  // Fetch full profile from server
-  fetch('/bounce/share/' + SHARE_TOKEN + '/user/' + userId)
-    .then(r => r.ok ? r.json() : Promise.reject())
-    .then(data => {
-      nameEl.textContent = data.nickname;
-      followersEl.textContent = data.followers_count;
-      followingEl.textContent = data.following_count;
-      if (data.profile_picture) {
-        const url = proxyUrl(data.profile_picture);
-        picEl.innerHTML = '<img src="' + url + '" onerror="this.parentNode.innerHTML=\'<span class=initial>' + (data.nickname[0] || '?').toUpperCase() + '</span>\'">';
-      }
-    })
-    .catch(() => {});
-}
-
-function closeUserSheet() {
-  document.getElementById('user-sheet').classList.remove('open');
-  document.getElementById('user-sheet-backdrop').style.display = 'none';
-}
-
-function openGuestUserSheet(name) {
-  const picEl = document.getElementById('us-pic');
-  const nameEl = document.getElementById('us-name');
-
-  const letter = (name[0] || '?').toUpperCase();
-  picEl.innerHTML = '<span class="initial">' + letter + '</span>';
-  nameEl.textContent = name;
-
-  // Hide stats, show "not on bounce" message
-  document.querySelector('.us-stats').style.display = 'none';
-  let msg = document.getElementById('us-guest-msg');
-  if (!msg) {
-    msg = document.createElement('div');
-    msg.id = 'us-guest-msg';
-    msg.style.cssText = 'text-align:center;color:#888;font-size:14px';
-    document.querySelector('.us-stats').insertAdjacentElement('afterend', msg);
-  }
-  msg.textContent = 'Not on Bounce yet';
-  msg.style.display = 'block';
-
-  document.getElementById('user-sheet-backdrop').style.display = 'block';
-  document.getElementById('user-sheet').classList.add('open');
 }
 
 function connectWebSocket() {

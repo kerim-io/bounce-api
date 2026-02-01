@@ -1,0 +1,93 @@
+<style>
+#user-sheet{position:fixed;bottom:0;left:0;right:0;background:#1a1a1a;border-radius:20px 20px 0 0;z-index:700;transform:translateY(100%);transition:transform .3s ease;padding:20px 24px 32px}
+#user-sheet.open{transform:translateY(0)}
+#user-sheet-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:650;display:none}
+.us-close{position:absolute;top:12px;right:12px;width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,.15);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:none;color:#fff;font-size:15px;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.us-pic{width:72px;height:72px;border-radius:50%;overflow:hidden;background:#333;margin:0 auto 12px;display:flex;align-items:center;justify-content:center}
+.us-pic img{width:100%;height:100%;object-fit:cover}
+.us-pic .initial{font-size:28px;font-weight:bold;color:#fff}
+.us-name{font-size:20px;font-weight:700;color:#fff;text-align:center;margin-bottom:16px}
+.us-stats{display:flex;justify-content:center;gap:32px}
+.us-stat{text-align:center}
+.us-stat-num{font-size:18px;font-weight:700;color:#fff}
+.us-stat-label{font-size:12px;color:#888;margin-top:2px}
+</style>
+
+<div id="user-sheet-backdrop" onclick="closeUserSheet()"></div>
+<div id="user-sheet">
+  <button class="us-close" onclick="closeUserSheet()">&times;</button>
+  <div class="us-pic" id="us-pic"></div>
+  <div class="us-name" id="us-name"></div>
+  <div class="us-stats">
+    <div class="us-stat"><div class="us-stat-num" id="us-followers">-</div><div class="us-stat-label">Followers</div></div>
+    <div class="us-stat"><div class="us-stat-num" id="us-following">-</div><div class="us-stat-label">Following</div></div>
+  </div>
+</div>
+
+<script>
+function openUserSheet(userId) {
+  var sheet = document.getElementById('user-sheet');
+  var picEl = document.getElementById('us-pic');
+  var nameEl = document.getElementById('us-name');
+  var followersEl = document.getElementById('us-followers');
+  var followingEl = document.getElementById('us-following');
+
+  var cached = peopleData['user_' + userId];
+  if (cached && cached.pic) {
+    picEl.innerHTML = '<img src="' + cached.pic + '" onerror="this.parentNode.innerHTML=\'<span class=initial>' + (cached.name[0] || '?').toUpperCase() + '</span>\'">';
+  } else {
+    var letter = cached ? (cached.name[0] || '?').toUpperCase() : '?';
+    picEl.innerHTML = '<span class="initial">' + letter + '</span>';
+  }
+  nameEl.textContent = cached ? cached.name : 'Loading...';
+  followersEl.textContent = '-';
+  followingEl.textContent = '-';
+  document.querySelector('.us-stats').style.display = 'flex';
+  var gMsg = document.getElementById('us-guest-msg');
+  if (gMsg) gMsg.style.display = 'none';
+
+  document.getElementById('user-sheet-backdrop').style.display = 'block';
+  sheet.classList.add('open');
+
+  fetch('/bounce/share/' + SHARE_TOKEN + '/user/' + userId)
+    .then(function(r) { return r.ok ? r.json() : Promise.reject(); })
+    .then(function(data) {
+      nameEl.textContent = data.nickname;
+      followersEl.textContent = data.followers_count;
+      followingEl.textContent = data.following_count;
+      if (data.profile_picture) {
+        var url = proxyUrl(data.profile_picture);
+        picEl.innerHTML = '<img src="' + url + '" onerror="this.parentNode.innerHTML=\'<span class=initial>' + (data.nickname[0] || '?').toUpperCase() + '</span>\'">';
+      }
+    })
+    .catch(function() {});
+}
+
+function closeUserSheet() {
+  document.getElementById('user-sheet').classList.remove('open');
+  document.getElementById('user-sheet-backdrop').style.display = 'none';
+}
+
+function openGuestUserSheet(name) {
+  var picEl = document.getElementById('us-pic');
+  var nameEl = document.getElementById('us-name');
+
+  var letter = (name[0] || '?').toUpperCase();
+  picEl.innerHTML = '<span class="initial">' + letter + '</span>';
+  nameEl.textContent = name;
+
+  document.querySelector('.us-stats').style.display = 'none';
+  var msg = document.getElementById('us-guest-msg');
+  if (!msg) {
+    msg = document.createElement('div');
+    msg.id = 'us-guest-msg';
+    msg.style.cssText = 'text-align:center;color:#888;font-size:14px';
+    document.querySelector('.us-stats').insertAdjacentElement('afterend', msg);
+  }
+  msg.textContent = 'Not on Bounce yet';
+  msg.style.display = 'block';
+
+  document.getElementById('user-sheet-backdrop').style.display = 'block';
+  document.getElementById('user-sheet').classList.add('open');
+}
+</script>

@@ -146,11 +146,15 @@ async def bounce_share_page(
     # Creator profile picture
     creator_pic = creator.profile_picture or creator.instagram_profile_pic or creator.profile_picture_1 or ""
 
-    # Read the template and inject variables
+    # Read the template and partial sheets
     import os
-    template_path = os.path.join(os.path.dirname(__file__), "..", "..", "templates", "bounce_share.html")
-    with open(template_path, "r") as f:
+    tpl_dir = os.path.join(os.path.dirname(__file__), "..", "..", "templates")
+    with open(os.path.join(tpl_dir, "bounce_share.html"), "r") as f:
         html = f.read()
+    with open(os.path.join(tpl_dir, "venue_sheet.html"), "r") as f:
+        html = html.replace("{{VENUE_SHEET}}", f.read())
+    with open(os.path.join(tpl_dir, "user_sheet.html"), "r") as f:
+        html = html.replace("{{USER_SHEET}}", f.read())
 
     # Replace template placeholders
     html = html.replace("{{VENUE_NAME}}", bounce.venue_name or "")
