@@ -175,7 +175,6 @@ class AutocompleteResponse(BaseModel):
 
 
 GOOGLE_PLACES_AUTOCOMPLETE_URL = "https://places.googleapis.com/v1/places:autocomplete"
-GOOGLE_PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 GOOGLE_PLACES_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 
 # Place types for venues (max 5 per Google Places API request)
@@ -331,12 +330,12 @@ async def places_autocomplete(
         limit=10
     )
 
-    # 2. If enough quality results from cache, return them immediately
-    if len(cached_results) >= 5:
+    # 2. If we have any cached results, return them immediately (avoid hitting Places API)
+    if cached_results:
         predictions = [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results]
         return AutocompleteResponse(predictions=predictions, from_cache=True)
 
-    # 3. Fall back to Google API
+    # 3. Fall back to Google API (only when Redis has no matches)
     if not settings.GOOGLE_MAPS_API_KEY:
         # If no API key, return whatever we have from cache
         if cached_results:
@@ -363,23 +362,12 @@ async def places_autocomplete(
         }
 
     # Build two autocomplete request bodies — one per type batch (API max 5 types).
-    # A third parallel Text Search request catches places with no primaryType
-    # (e.g. private members' clubs like Shoreditch House).
     ac_bodies = []
     for type_batch in [VENUE_TYPES_A, VENUE_TYPES_B]:
         b = {"input": query, "includedPrimaryTypes": type_batch}
         if location_bias:
             b["locationBias"] = location_bias
         ac_bodies.append(b)
-
-    ts_headers = {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": settings.GOOGLE_MAPS_API_KEY,
-        "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.photos",
-    }
-    ts_body = {"textQuery": query}
-    if location_bias:
-        ts_body["locationBias"] = location_bias
 
     async def _autocomplete_request(session, body, ssl_ctx):
         """Fire one autocomplete request, return suggestions list or []."""
@@ -392,60 +380,13 @@ async def places_autocomplete(
         except Exception:
             return []
 
-    async def _text_search_request(session, ssl_ctx):
-        """Fire a text search request, return results as autocomplete-shaped suggestions."""
-        try:
-            async with session.post(GOOGLE_PLACES_TEXT_SEARCH_URL, headers=ts_headers, json=ts_body, ssl=ssl_ctx) as resp:
-                data = await resp.json()
-                if resp.status != 200:
-                    return []
-                results = []
-                for place in data.get("places", []):
-                    place_id = place.get("id", "")
-                    display_name = place.get("displayName", {}).get("text", "")
-                    address = place.get("formattedAddress", "")
-                    location = place.get("location", {})
-                    place_lat = location.get("latitude")
-                    place_lng = location.get("longitude")
-                    place_types = place.get("types", [])
-                    photo_url = None
-                    photos = place.get("photos", [])
-                    if photos:
-                        photo_name = photos[0].get("name")
-                        if photo_name:
-                            photo_url = (
-                                f"https://places.googleapis.com/v1/{photo_name}/media"
-                                f"?maxWidthPx=800&key={settings.GOOGLE_MAPS_API_KEY}"
-                            )
-                    distance_meters = None
-                    if lat is not None and lng is not None and place_lat is not None and place_lng is not None:
-                        distance_meters = haversine_distance_meters(lat, lng, place_lat, place_lng)
-                    results.append(PlacePrediction(
-                        place_id=place_id,
-                        name=display_name,
-                        address=address,
-                        full_description=f"{display_name}, {address}" if address else display_name,
-                        latitude=place_lat,
-                        longitude=place_lng,
-                        distance_meters=distance_meters,
-                        photo_url=photo_url,
-                        types=place_types,
-                        from_cache=False,
-                    ))
-                return results
-        except Exception:
-            return []
-
     try:
         ssl_ctx = get_ssl_context()
         async with aiohttp.ClientSession() as session:
-            # Fire all three requests in parallel:
-            # - Two typed autocomplete batches (bars, restaurants, gyms, etc.)
-            # - One text search (catches everything including members' clubs)
-            results_a, results_b, ts_results = await asyncio.gather(
+            # Fire two typed autocomplete batches in parallel (bars, restaurants, gyms, etc.)
+            results_a, results_b = await asyncio.gather(
                 _autocomplete_request(session, ac_bodies[0], ssl_ctx),
                 _autocomplete_request(session, ac_bodies[1], ssl_ctx),
-                _text_search_request(session, ssl_ctx),
             )
 
             # Merge and deduplicate autocomplete suggestions (typed results first)
@@ -457,7 +398,7 @@ async def places_autocomplete(
                     raw_predictions.append(pred)
                     seen_ids.add(pid)
 
-            if not raw_predictions and not ts_results:
+            if not raw_predictions:
                 if cached_results:
                     predictions = [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results]
                     return AutocompleteResponse(predictions=predictions, from_cache=True)
@@ -527,12 +468,6 @@ async def places_autocomplete(
                     merged_predictions.append(gp)
                     seen_place_ids.add(gp.place_id)
 
-            # Add text search results (catches places with no primaryType)
-            for tp in ts_results:
-                if tp.place_id not in seen_place_ids:
-                    merged_predictions.append(tp)
-                    seen_place_ids.add(tp.place_id)
-
             # Sort by distance (closest first) if distances are available
             merged_predictions.sort(key=lambda p: p.distance_meters if p.distance_meters is not None else float('inf'))
 
@@ -540,12 +475,11 @@ async def places_autocomplete(
             final_predictions = merged_predictions[:10]
 
             # 5. Index all Google results to global cache (fire-and-forget)
-            all_google = google_predictions + ts_results
-            asyncio.create_task(_index_predictions_to_global_cache(all_google))
+            asyncio.create_task(_index_predictions_to_global_cache(google_predictions))
 
             return AutocompleteResponse(
                 predictions=final_predictions,
-                from_cache=len(cached_results) > 0 and len(google_predictions) == 0 and len(ts_results) == 0
+                from_cache=len(cached_results) > 0 and len(google_predictions) == 0
             )
 
     except aiohttp.ClientError as e:
@@ -557,124 +491,6 @@ async def places_autocomplete(
 
 
 GOOGLE_PLACES_PHOTO_URL = "https://maps.googleapis.com/maps/api/place/photo"
-
-
-# ============== Places Text Search ==============
-
-@router.get("/places/textsearch", response_model=AutocompleteResponse)
-async def places_text_search(
-    query: str = Query(..., min_length=1, description="Search query (e.g. 'coffee')"),
-    lat: float = Query(..., ge=-90, le=90, description="Center latitude"),
-    lng: float = Query(..., ge=-180, le=180, description="Center longitude"),
-    radius: int = Query(500, ge=100, le=5000, description="Search radius in meters"),
-    current_user: User = Depends(get_current_user)
-):
-    """
-    Text Search for places around a location. Uses Google Places Text Search API
-    with Redis caching (1 hour TTL).
-
-    Returns same shape as autocomplete for client compatibility.
-
-    Example: /geocoding/places/textsearch?query=coffee&lat=25.79&lng=-80.13&radius=500
-    """
-    # 1. Check Redis cache
-    cache_key = f"textsearch:{query}:{round(lat, 3)}:{round(lng, 3)}:{radius}"
-    cached = await cache_get(cache_key)
-    if cached:
-        predictions = [PlacePrediction(**p) for p in cached]
-        return AutocompleteResponse(predictions=predictions, from_cache=True)
-
-    # 2. Call Google Places Text Search API
-    if not settings.GOOGLE_MAPS_API_KEY:
-        raise HTTPException(
-            status_code=503,
-            detail="Places API not configured. GOOGLE_MAPS_API_KEY required."
-        )
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": settings.GOOGLE_MAPS_API_KEY,
-        "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.photos",
-    }
-
-    body = {
-        "textQuery": query,
-        "locationBias": {
-            "circle": {
-                "center": {"latitude": lat, "longitude": lng},
-                "radius": float(radius),
-            }
-        },
-    }
-
-    try:
-        ssl_ctx = get_ssl_context()
-        async with aiohttp.ClientSession() as session:
-            async with session.post(GOOGLE_PLACES_TEXT_SEARCH_URL, headers=headers, json=body, ssl=ssl_ctx) as response:
-                data = await response.json()
-
-                if response.status != 200:
-                    error_msg = data.get("error", {}).get("message", "Unknown error")
-                    raise HTTPException(status_code=502, detail=f"Text Search API error: {error_msg}")
-
-                raw_places = data.get("places", [])
-                if not raw_places:
-                    return AutocompleteResponse(predictions=[])
-
-                # 3. Build predictions from results
-                predictions = []
-                for place in raw_places:
-                    place_id = place.get("id", "")
-                    display_name = place.get("displayName", {}).get("text", "")
-                    address = place.get("formattedAddress", "")
-                    location = place.get("location", {})
-                    place_lat = location.get("latitude")
-                    place_lng = location.get("longitude")
-                    place_types = place.get("types", [])
-
-                    # Build photo URL from first photo resource name
-                    photo_url = None
-                    photos = place.get("photos", [])
-                    if photos:
-                        photo_name = photos[0].get("name")
-                        if photo_name:
-                            photo_url = (
-                                f"https://places.googleapis.com/v1/{photo_name}/media"
-                                f"?maxWidthPx=800&key={settings.GOOGLE_MAPS_API_KEY}"
-                            )
-
-                    # Calculate distance
-                    distance_meters = None
-                    if place_lat is not None and place_lng is not None:
-                        distance_meters = haversine_distance_meters(lat, lng, place_lat, place_lng)
-
-                    predictions.append(PlacePrediction(
-                        place_id=place_id,
-                        name=display_name,
-                        address=address,
-                        full_description=f"{display_name}, {address}" if address else display_name,
-                        latitude=place_lat,
-                        longitude=place_lng,
-                        distance_meters=distance_meters,
-                        photo_url=photo_url,
-                        types=place_types,
-                        from_cache=False,
-                    ))
-
-                # Sort by distance
-                predictions.sort(key=lambda p: p.distance_meters if p.distance_meters is not None else float('inf'))
-                predictions = predictions[:20]
-
-                # 4. Cache results (default 7 days — places data rarely changes)
-                await cache_set(cache_key, [p.model_dump() for p in predictions])
-
-                # 5. Index to global autocomplete cache (fire-and-forget)
-                asyncio.create_task(_index_predictions_to_global_cache(predictions))
-
-                return AutocompleteResponse(predictions=predictions, from_cache=False)
-
-    except aiohttp.ClientError as e:
-        raise HTTPException(status_code=502, detail=f"Failed to reach Places API: {str(e)}")
 
 
 @router.get("/places/details/{place_id}", response_model=PlaceDetails)
