@@ -24,6 +24,7 @@ router = APIRouter(prefix="/checkins", tags=["checkins"])
 # Constants
 CHECKIN_PROXIMITY_METERS = 100  # Must be within 100m to check in
 CHECKIN_EXPIRY_HOURS = 24  # Check-ins expire after 24 hours of inactivity
+AUTO_CHECKOUT_RADIUS_METERS = 150  # Auto-checkout when user is >150m from venue (hysteresis)
 
 
 async def move_checkin_to_history(db: AsyncSession, checkin: CheckIn) -> None:
@@ -43,6 +44,62 @@ async def move_checkin_to_history(db: AsyncSession, checkin: CheckIn) -> None:
     db.add(history)
     # Delete from active check-ins
     await db.delete(checkin)
+
+
+async def auto_checkout_if_needed(db: AsyncSession, user_id: int, user_lat: float, user_lng: float) -> Optional[str]:
+    """
+    Check if user has an active venue check-in and is far enough away to auto-checkout.
+    Returns the place_id if auto-checkout was performed, None otherwise.
+    """
+    expiry_time = datetime.now(timezone.utc) - timedelta(hours=CHECKIN_EXPIRY_HOURS)
+    result = await db.execute(
+        select(CheckIn).where(
+            and_(
+                CheckIn.user_id == user_id,
+                CheckIn.is_active == True,
+                CheckIn.last_seen_at >= expiry_time,
+                CheckIn.places_fk_id.isnot(None)
+            )
+        )
+    )
+    checkin = result.scalar_one_or_none()
+    if not checkin:
+        return None
+
+    # Get venue coordinates from the Place record
+    place_result = await db.execute(
+        select(Place).where(Place.id == checkin.places_fk_id)
+    )
+    place = place_result.scalar_one_or_none()
+    if not place:
+        return None
+
+    distance = haversine_distance(user_lat, user_lng, place.latitude, place.longitude)
+    if distance <= AUTO_CHECKOUT_RADIUS_METERS:
+        return None
+
+    place_id = checkin.place_id
+    venue_name = checkin.location_name
+
+    # Auto-checkout: move to history
+    await move_checkin_to_history(db, checkin)
+    await db.commit()
+
+    # Invalidate venue count cache
+    if place_id:
+        await cache_delete(f"venue_count:{place_id}")
+
+    # Broadcast checkout to all connected clients
+    await manager.broadcast({
+        "type": "venue_checkout",
+        "place_id": place_id,
+        "venue_name": venue_name,
+        "user_id": user_id,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+
+    logger.info(f"Auto-checkout user {user_id} from venue {place_id} (distance: {int(distance)}m)")
+    return place_id
 
 
 def haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:

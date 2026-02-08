@@ -21,6 +21,7 @@ from api.routes.websocket import manager as ws_manager
 from services.geofence import haversine_distance
 from services.cache import cache_get, cache_set, cache_delete
 from services.tasks import enqueue_notification, payload_to_dict
+from api.routes.checkins import auto_checkout_if_needed
 from services.instagram import fetch_instagram_profile
 import re
 
@@ -923,6 +924,9 @@ async def update_location(
     current_user.can_post = can_post
 
     await db.commit()
+
+    # Auto-checkout from venue if user has moved far enough away
+    await auto_checkout_if_needed(db, current_user.id, location.latitude, location.longitude)
 
     if can_post:
         return LocationResponse(

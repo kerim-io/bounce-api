@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSo
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from jose import JWTError
+from typing import Optional
 
 from db.database import get_async_session, create_async_session
 from db.models import Bounce, BounceInvite, BounceLocationShare, BounceGuestLocation, User, Follow
@@ -15,6 +17,7 @@ from api.dependencies import get_current_user
 from api.routes.websocket import manager
 from api.routes.bounces import get_bounce_participants, get_venue_photo_url
 from core.config import settings
+from services.auth_service import decode_access_token
 from services.ai_commentator import get_or_create_commentator, remove_commentator
 
 router = APIRouter(tags=["bounce-share"])
@@ -185,32 +188,90 @@ async def bounce_share_user_profile(
     }
 
 
-@router.get("/bounce/share/{share_token}", response_class=HTMLResponse)
-async def bounce_share_page(
-    share_token: str,
+async def _validate_app_token(db: AsyncSession, token: str, bounce_id: int) -> Optional[User]:
+    """Validate a JWT app_token and return the User if they're a participant of this bounce."""
+    try:
+        payload = decode_access_token(token)
+        user_id = int(payload.get("sub"))
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if not user or not user.is_active:
+            return None
+        if not await _is_participant(db, bounce_id, user.id):
+            return None
+        return user
+    except (JWTError, ValueError, TypeError):
+        return None
+
+
+@router.get("/bounce/chat/{bounce_id}", response_class=HTMLResponse)
+async def bounce_chat_page(
+    bounce_id: int,
     request: Request,
-    db: AsyncSession = Depends(get_async_session)
+    app_token: str = Query(...),
+    db: AsyncSession = Depends(get_async_session),
 ):
-    """Serve the web map page for a shared bounce."""
+    """Direct chat page for authenticated app users — no share token needed.
+
+    The app user's JWT is validated and the bounce's share_token is auto-created
+    if it doesn't exist. Serves the same map+chat HTML but in app-user mode.
+    """
+    # Validate JWT
+    try:
+        payload = decode_access_token(app_token)
+        user_id = int(payload.get("sub"))
+    except (JWTError, ValueError, TypeError):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    app_user = result.scalar_one_or_none()
+    if not app_user or not app_user.is_active:
+        raise HTTPException(status_code=401, detail="Invalid user")
+
+    if not await _is_participant(db, bounce_id, user_id):
+        raise HTTPException(status_code=403, detail="Not a participant of this bounce")
+
+    # Load bounce
     result = await db.execute(
         select(Bounce, User)
         .join(User, Bounce.creator_id == User.id)
-        .where(Bounce.share_token == share_token, Bounce.status == 'active')
+        .where(Bounce.id == bounce_id, Bounce.status == 'active')
     )
     row = result.first()
     if not row:
-        raise HTTPException(status_code=404, detail="Bounce not found or no longer active")
+        raise HTTPException(status_code=404, detail="Bounce not found or not active")
 
     bounce, creator = row
 
-    # Fetch venue photo URL
-    venue_photo_url = await get_venue_photo_url(db, bounce.places_fk_id) or ""
+    # Auto-create share_token if missing (needed for WebSocket endpoint)
+    if not bounce.share_token:
+        bounce.share_token = secrets.token_hex(16)
+        await db.commit()
+        await db.refresh(bounce)
 
-    # Creator profile picture
+    share_token = bounce.share_token
+
+    # Render HTML with app-user identity baked in
+    return await _render_bounce_html(
+        db, request, bounce, creator, share_token, app_token=app_token, app_user=app_user
+    )
+
+
+async def _render_bounce_html(
+    db: AsyncSession,
+    request: Request,
+    bounce,
+    creator,
+    share_token: str,
+    app_token: Optional[str] = None,
+    app_user: Optional[User] = None,
+) -> HTMLResponse:
+    """Shared HTML renderer for both the guest share page and the app-user chat page."""
+    import os
+
+    venue_photo_url = await get_venue_photo_url(db, bounce.places_fk_id) or ""
     creator_pic = creator.profile_picture or creator.instagram_profile_pic or creator.profile_picture_1 or ""
 
-    # Read the template and partial sheets
-    import os
     tpl_dir = os.path.join(os.path.dirname(__file__), "..", "..", "templates")
     with open(os.path.join(tpl_dir, "bounce_share.html"), "r") as f:
         html = f.read()
@@ -224,7 +285,6 @@ async def bounce_share_page(
         chat_panel_html = f.read().replace("{{FEED_ITEM}}", feed_item_html)
     html = html.replace("{{CHAT_PANEL}}", chat_panel_html)
 
-    # Replace template placeholders
     html = html.replace("{{VENUE_NAME}}", bounce.venue_name or "")
     html = html.replace("{{VENUE_ADDRESS}}", bounce.venue_address or "")
     html = html.replace("{{LATITUDE}}", str(bounce.latitude))
@@ -236,12 +296,25 @@ async def bounce_share_page(
     html = html.replace("{{CREATOR_PROFILE_PIC}}", creator_pic)
     html = html.replace("{{GOOGLE_MAPS_API_KEY}}", settings.GOOGLE_MAPS_API_KEY)
 
-    # Bounce timing
+    if app_user and app_token:
+        app_user_pic = app_user.profile_picture or app_user.instagram_profile_pic or app_user.profile_picture_1 or ""
+        app_user_name = app_user.nickname or app_user.first_name or "User"
+        html = html.replace("{{IS_APP_USER}}", "true")
+        html = html.replace("{{APP_USER_ID}}", str(app_user.id))
+        html = html.replace("{{APP_USER_NAME}}", app_user_name)
+        html = html.replace("{{APP_USER_PIC}}", app_user_pic)
+        html = html.replace("{{APP_TOKEN}}", app_token)
+    else:
+        html = html.replace("{{IS_APP_USER}}", "false")
+        html = html.replace("{{APP_USER_ID}}", "0")
+        html = html.replace("{{APP_USER_NAME}}", "")
+        html = html.replace("{{APP_USER_PIC}}", "")
+        html = html.replace("{{APP_TOKEN}}", "")
+
     bounce_time_iso = bounce.bounce_time.isoformat() if bounce.bounce_time else ""
     html = html.replace("{{BOUNCE_TIME}}", bounce_time_iso)
     html = html.replace("{{IS_NOW}}", "true" if bounce.is_now else "false")
 
-    # Derive WS base — respect X-Forwarded-Proto (Railway/proxies terminate TLS)
     proto = request.headers.get("x-forwarded-proto", request.url.scheme)
     host = request.headers.get("host") or request.base_url.hostname
     ws_proto = "wss" if proto == "https" else "ws"
@@ -251,17 +324,54 @@ async def bounce_share_page(
     return HTMLResponse(content=html)
 
 
+@router.get("/bounce/share/{share_token}", response_class=HTMLResponse)
+async def bounce_share_page(
+    share_token: str,
+    request: Request,
+    db: AsyncSession = Depends(get_async_session),
+    app_token: Optional[str] = Query(None),
+):
+    """Serve the web map page for a shared bounce (guest link)."""
+    result = await db.execute(
+        select(Bounce, User)
+        .join(User, Bounce.creator_id == User.id)
+        .where(Bounce.share_token == share_token, Bounce.status == 'active')
+    )
+    row = result.first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Bounce not found or no longer active")
+
+    bounce, creator = row
+
+    app_user: Optional[User] = None
+    if app_token:
+        app_user = await _validate_app_token(db, app_token, bounce.id)
+
+    return await _render_bounce_html(
+        db, request, bounce, creator, share_token,
+        app_token=app_token, app_user=app_user,
+    )
+
+
 @router.websocket("/ws/bounce/{share_token}")
 async def bounce_guest_websocket(
     websocket: WebSocket,
     share_token: str,
-    guest_id: str = Query(...),
-    name: str = Query(...)
+    guest_id: Optional[str] = Query(None),
+    name: Optional[str] = Query(None),
+    app_token: Optional[str] = Query(None),
 ):
-    """WebSocket for guest (non-app) users viewing a shared bounce map."""
+    """WebSocket for users viewing a shared bounce map.
+
+    Guest mode (default):  ?guest_id=<uuid>&name=<display_name>
+    App-user mode:         ?app_token=<jwt>   (no guest record created)
+    """
     db = create_async_session()
     bounce_id = None
     explicit_leave = False
+    is_app_user = False
+    app_user_id: Optional[int] = None
+
     try:
         # Validate share_token
         result = await db.execute(
@@ -274,69 +384,86 @@ async def bounce_guest_websocket(
 
         bounce_id = bounce.id
 
-        await manager.connect_guest(websocket, bounce_id)
-        logger.info(f"Guest '{name}' ({guest_id}) connected to bounce {bounce_id}")
-
-        # Check if this guest already exists (reconnect vs first join)
-        result = await db.execute(
-            select(BounceGuestLocation).where(
-                BounceGuestLocation.bounce_id == bounce_id,
-                BounceGuestLocation.guest_id == guest_id
-            )
-        )
-        guest_rec = result.scalar_one_or_none()
-        is_new_guest = guest_rec is None
-
-        if guest_rec:
-            # Returning guest — just update name, keep them as-is
-            guest_rec.display_name = name
-            guest_rec.is_connected = True
+        # Determine if this is an app user or guest
+        if app_token:
+            app_user = await _validate_app_token(db, app_token, bounce.id)
+            if not app_user:
+                await websocket.close(code=4001, reason="Invalid app token or not a participant")
+                return
+            is_app_user = True
+            app_user_id = app_user.id
+            name = app_user.nickname or app_user.first_name or "User"
+            guest_id = f"app_{app_user.id}"  # synthetic ID for commentator tracking
+            profile_pic = app_user.profile_picture or app_user.instagram_profile_pic or app_user.profile_picture_1 or ""
+            logger.info(f"App user '{name}' (id={app_user_id}) connected to bounce chat {bounce_id}")
         else:
-            # Brand new guest joining for the first time
-            guest_rec = BounceGuestLocation(
-                bounce_id=bounce_id,
-                guest_id=guest_id,
-                display_name=name,
-                latitude=0,
-                longitude=0,
-                is_sharing=False,
-                is_connected=True
-            )
-            db.add(guest_rec)
-        await db.commit()
+            if not guest_id or not name:
+                await websocket.close(code=4000, reason="guest_id and name are required")
+                return
 
-        # Only notify on FIRST join, not on reconnect/refresh
-        if is_new_guest:
-            join_msg = {
-                "type": "guest_joined",
-                "bounce_id": bounce_id,
-                "guest_id": guest_id,
-                "display_name": name
-            }
-            await manager.send_to_bounce(bounce_id, join_msg)
-            participants = await get_bounce_participants(db, bounce_id)
-            for pid in participants:
-                await manager.send_to_user(pid, join_msg)
+        await manager.connect_guest(websocket, bounce_id)
 
-            # Send push notification to app participants
-            from services.apns_service import NotificationPayload, NotificationType
-            from services.tasks import enqueue_notification, payload_to_dict
-            for pid in participants:
-                payload = NotificationPayload(
-                    notification_type=NotificationType.GUEST_JOINED,
-                    title="Guest Joined",
-                    body=f"{name} joined the bounce at {bounce.venue_name}",
-                    actor_id=0,
-                    actor_nickname=name,
-                    bounce_id=bounce.id,
-                    bounce_venue_name=bounce.venue_name,
-                    bounce_place_id=bounce.place_id
+        if not is_app_user:
+            logger.info(f"Guest '{name}' ({guest_id}) connected to bounce {bounce_id}")
+
+            # Check if this guest already exists (reconnect vs first join)
+            result = await db.execute(
+                select(BounceGuestLocation).where(
+                    BounceGuestLocation.bounce_id == bounce_id,
+                    BounceGuestLocation.guest_id == guest_id
                 )
-                enqueue_notification(pid, payload_to_dict(payload))
+            )
+            guest_rec = result.scalar_one_or_none()
+            is_new_guest = guest_rec is None
+
+            if guest_rec:
+                guest_rec.display_name = name
+                guest_rec.is_connected = True
+            else:
+                guest_rec = BounceGuestLocation(
+                    bounce_id=bounce_id,
+                    guest_id=guest_id,
+                    display_name=name,
+                    latitude=0,
+                    longitude=0,
+                    is_sharing=False,
+                    is_connected=True
+                )
+                db.add(guest_rec)
+            await db.commit()
+
+            # Only notify on FIRST join, not on reconnect/refresh
+            if is_new_guest:
+                join_msg = {
+                    "type": "guest_joined",
+                    "bounce_id": bounce_id,
+                    "guest_id": guest_id,
+                    "display_name": name
+                }
+                await manager.send_to_bounce(bounce_id, join_msg)
+                participants = await get_bounce_participants(db, bounce_id)
+                for pid in participants:
+                    await manager.send_to_user(pid, join_msg)
+
+                # Send push notification to app participants
+                from services.apns_service import NotificationPayload, NotificationType
+                from services.tasks import enqueue_notification, payload_to_dict
+                for pid in participants:
+                    payload = NotificationPayload(
+                        notification_type=NotificationType.GUEST_JOINED,
+                        title="Guest Joined",
+                        body=f"{name} joined the bounce at {bounce.venue_name}",
+                        actor_id=0,
+                        actor_nickname=name,
+                        bounce_id=bounce.id,
+                        bounce_venue_name=bounce.venue_name,
+                        bounce_place_id=bounce.place_id
+                    )
+                    enqueue_notification(pid, payload_to_dict(payload))
 
         # Send initial state
         initial_state = await _build_initial_state(db, bounce_id)
-        logger.info(f"Sending initial_state to guest '{name}': {len(initial_state.get('app_users', []))} app users, {len(initial_state.get('guests', []))} guests")
+        logger.info(f"Sending initial_state to '{name}': {len(initial_state.get('app_users', []))} app users, {len(initial_state.get('guests', []))} guests")
         await websocket.send_json(initial_state)
 
         # Fetch creator name for commentator context
@@ -368,8 +495,9 @@ async def bounce_guest_websocket(
         if history:
             await websocket.send_json({"type": "chat_history", "messages": history})
 
-        # Notify AI about the join
-        commentator.push_event({"type": "join", "name": name})
+        # Notify AI about the join (skip for app users — they're already attendees)
+        if not is_app_user:
+            commentator.push_event({"type": "join", "name": name})
 
         # Message loop
         while True:
@@ -386,7 +514,7 @@ async def bounce_guest_websocket(
 
             msg_type = data.get("type")
 
-            if msg_type == "guest_location":
+            if msg_type == "guest_location" and not is_app_user:
                 lat = data.get("latitude")
                 lng = data.get("longitude")
                 if lat is None or lng is None:
@@ -417,7 +545,6 @@ async def bounce_guest_websocket(
                     db.add(guest_loc)
                 await db.commit()
 
-                # Build message
                 loc_msg = {
                     "type": "guest_location_shared",
                     "bounce_id": bounce_id,
@@ -427,18 +554,14 @@ async def bounce_guest_websocket(
                     "longitude": lng
                 }
 
-                # Notify other guest web clients
                 await manager.send_to_bounce(bounce_id, loc_msg)
-
-                # Notify app users
                 participants = await get_bounce_participants(db, bounce_id)
                 for pid in participants:
                     await manager.send_to_user(pid, loc_msg)
 
-                # Check if guest arrived at venue (for AI commentary)
                 commentator.check_arrival(guest_id, name, lat, lng)
 
-            elif msg_type == "guest_stop_sharing":
+            elif msg_type == "guest_stop_sharing" and not is_app_user:
                 result = await db.execute(
                     select(BounceGuestLocation).where(
                         BounceGuestLocation.bounce_id == bounce_id,
@@ -468,82 +591,85 @@ async def bounce_guest_websocket(
                 chat_msg = {
                     "type": "chat_message",
                     "sender": name,
-                    "guest_id": guest_id,
                     "text": text,
                     "is_ai": False,
                     "timestamp": time.time(),
                 }
+                # Tag with user_id for app users, guest_id for guests
+                if is_app_user:
+                    chat_msg["user_id"] = app_user_id
+                    chat_msg["profile_picture"] = profile_pic
+                else:
+                    chat_msg["guest_id"] = guest_id
+
                 commentator.add_chat(name, text, is_ai=False)
                 await manager.send_to_bounce(bounce_id, chat_msg)
                 commentator.push_event({"type": "chat", "sender": name, "text": text})
 
-            elif msg_type == "guest_leave":
-                # Explicit leave — flag so finally block sends guest_left
+            elif msg_type == "guest_leave" and not is_app_user:
                 explicit_leave = True
                 break
 
     except WebSocketDisconnect:
-        logger.info(f"Guest '{name}' ({guest_id}) disconnected from bounce {bounce_id}")
+        logger.info(f"'{name}' ({guest_id}) disconnected from bounce {bounce_id}")
     except Exception as e:
         logger.error(f"Guest WS error for bounce: {e}")
     finally:
         if bounce_id is not None:
-            try:
-                result = await db.execute(
-                    select(BounceGuestLocation).where(
-                        BounceGuestLocation.bounce_id == bounce_id,
-                        BounceGuestLocation.guest_id == guest_id
+            # App users don't have guest records — skip guest cleanup
+            if not is_app_user:
+                try:
+                    result = await db.execute(
+                        select(BounceGuestLocation).where(
+                            BounceGuestLocation.bounce_id == bounce_id,
+                            BounceGuestLocation.guest_id == guest_id
+                        )
                     )
-                )
-                guest_loc = result.scalar_one_or_none()
+                    guest_loc = result.scalar_one_or_none()
 
-                if explicit_leave and guest_loc:
-                    # Explicit leave — delete the record entirely
-                    await db.delete(guest_loc)
-                    await db.commit()
-                elif guest_loc:
-                    # Browser closed / WS dropped — only stop location sharing
-                    # Guest stays as a permanent attendee
-                    guest_loc.is_sharing = False
-                    guest_loc.is_connected = True  # still an attendee
-                    await db.commit()
-            except Exception:
-                pass
+                    if explicit_leave and guest_loc:
+                        await db.delete(guest_loc)
+                        await db.commit()
+                    elif guest_loc:
+                        guest_loc.is_sharing = False
+                        guest_loc.is_connected = True
+                        await db.commit()
+                except Exception:
+                    pass
 
-            try:
-                if explicit_leave:
-                    # Only send guest_left on explicit leave (removes from attendee list)
-                    notify_msg = {
-                        "type": "guest_left",
-                        "bounce_id": bounce_id,
-                        "guest_id": guest_id,
-                        "display_name": name
-                    }
-                    await manager.send_to_bounce(bounce_id, notify_msg)
-                    participants = await get_bounce_participants(db, bounce_id)
-                    for pid in participants:
-                        await manager.send_to_user(pid, notify_msg)
-                else:
-                    # WS drop — just stop showing location on map
-                    stop_msg = {
-                        "type": "guest_location_stopped",
-                        "bounce_id": bounce_id,
-                        "guest_id": guest_id
-                    }
-                    await manager.send_to_bounce(bounce_id, stop_msg)
-                    participants = await get_bounce_participants(db, bounce_id)
-                    for pid in participants:
-                        await manager.send_to_user(pid, stop_msg)
-            except Exception:
-                pass
+                try:
+                    if explicit_leave:
+                        notify_msg = {
+                            "type": "guest_left",
+                            "bounce_id": bounce_id,
+                            "guest_id": guest_id,
+                            "display_name": name
+                        }
+                        await manager.send_to_bounce(bounce_id, notify_msg)
+                        participants = await get_bounce_participants(db, bounce_id)
+                        for pid in participants:
+                            await manager.send_to_user(pid, notify_msg)
+                    else:
+                        stop_msg = {
+                            "type": "guest_location_stopped",
+                            "bounce_id": bounce_id,
+                            "guest_id": guest_id
+                        }
+                        await manager.send_to_bounce(bounce_id, stop_msg)
+                        participants = await get_bounce_participants(db, bounce_id)
+                        for pid in participants:
+                            await manager.send_to_user(pid, stop_msg)
+                except Exception:
+                    pass
 
-            # Notify AI commentator about the leave
+            # Clean up commentator tracking
             try:
                 from services.ai_commentator import _commentators
                 if bounce_id in _commentators:
                     c = _commentators[bounce_id]
                     c.attendees.pop(guest_id, None)
-                    c.push_event({"type": "leave", "name": name})
+                    if not is_app_user:
+                        c.push_event({"type": "leave", "name": name})
                     if not c.attendees:
                         await remove_commentator(bounce_id)
             except Exception:

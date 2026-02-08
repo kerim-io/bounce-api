@@ -1,7 +1,7 @@
 <style>
 .feed-item{display:flex;gap:8px;align-items:flex-start;padding:5px 0;animation:feedIn .3s ease}
 @keyframes feedIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-.feed-avatar{width:38px;height:38px;border-radius:50%;background:#333;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px;font-weight:700;color:#fff;font-family:system-ui,-apple-system,sans-serif}
+.feed-avatar{width:38px;height:38px;border-radius:50%;background:#333;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px;font-weight:700;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden}
 .feed-avatar.ai{background:rgba(74,158,255,.2);color:#4a9eff}
 .feed-avatar.self{background:#4a9eff;color:#fff}
 .feed-body{flex:1;min-width:0}
@@ -24,7 +24,7 @@ function formatFeedTime(ts) {
   return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;
 }
 
-function renderChatMsg(sender, text, isAi, isSelf, timestamp) {
+function renderChatMsg(sender, text, isAi, isSelf, timestamp, pic) {
   var container = document.getElementById('feed-messages');
   var item = document.createElement('div');
   item.className = 'feed-item';
@@ -37,10 +37,28 @@ function renderChatMsg(sender, text, isAi, isSelf, timestamp) {
     avatar.textContent = 'AI';
   } else if (isSelf) {
     avatar.className = 'feed-avatar self';
-    avatar.textContent = initial;
+    if (pic) {
+      var img = document.createElement('img');
+      img.src = pic.startsWith('data:') ? pic : '/bounce/img-proxy?url=' + encodeURIComponent(pic);
+      img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:50%';
+      img.onerror = function() { this.parentNode.textContent = initial; };
+      avatar.textContent = '';
+      avatar.appendChild(img);
+    } else {
+      avatar.textContent = initial;
+    }
   } else {
     avatar.className = 'feed-avatar';
-    avatar.textContent = initial;
+    if (pic) {
+      var img = document.createElement('img');
+      img.src = pic.startsWith('data:') ? pic : '/bounce/img-proxy?url=' + encodeURIComponent(pic);
+      img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:50%';
+      img.onerror = function() { this.parentNode.textContent = initial; };
+      avatar.textContent = '';
+      avatar.appendChild(img);
+    } else {
+      avatar.textContent = initial;
+    }
   }
 
   var body = document.createElement('div');

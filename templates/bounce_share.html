@@ -118,6 +118,13 @@ const IS_NOW = {{IS_NOW}};
 const STORAGE_KEY_ID = 'bounce_guest_id_' + SHARE_TOKEN;
 const STORAGE_KEY_NAME = 'bounce_guest_name_' + SHARE_TOKEN;
 
+// App-user mode (injected by backend when opened from iOS app)
+const IS_APP_USER = {{IS_APP_USER}};
+const APP_USER_ID = {{APP_USER_ID}};
+const APP_USER_NAME = "{{APP_USER_NAME}}";
+const APP_USER_PIC = "{{APP_USER_PIC}}";
+const APP_TOKEN = "{{APP_TOKEN}}";
+
 let map, ws, geoWatchId;
 let markers = {};
 let peopleData = {}; // track name/type for bottom sheet
@@ -125,6 +132,7 @@ let activePinEl = null; // currently popped pin element
 let venuePinRef = null; // reference to venue pin overlay
 let myGuestId;
 let myName;
+let myUserId = IS_APP_USER ? APP_USER_ID : null;
 let reconnectTimer;
 let pingInterval;
 let locationInterval; // periodic fallback for background location
@@ -220,9 +228,25 @@ function joinBounce() {
   waitForMaps(() => initMap());
 }
 
-// Auto-join if returning user (deferred until full DOM is parsed,
+// Auto-join if returning user OR app user (deferred until full DOM is parsed,
 // because #chat-panel is injected after this script block)
 function tryAutoJoin() {
+  // App user mode — skip overlay entirely, use injected identity
+  if (IS_APP_USER && APP_USER_ID) {
+    myName = APP_USER_NAME;
+    myGuestId = 'app_' + APP_USER_ID; // synthetic, matches backend
+    myUserId = APP_USER_ID;
+    document.getElementById('overlay').style.display = 'none';
+    document.getElementById('info-bar').style.display = 'flex';
+    document.getElementById('chat-panel').style.display = 'flex';
+    // Hide leave button for app users (they close the WebView instead)
+    document.getElementById('leave-btn').style.display = 'none';
+    // Hide location sharing button (app handles location natively)
+    document.getElementById('loc-btn').style.display = 'none';
+    waitForMaps(() => initMap());
+    return;
+  }
+
   const savedName = localStorage.getItem(STORAGE_KEY_NAME);
   const savedId = localStorage.getItem(STORAGE_KEY_ID);
   if (savedName && savedId) {
@@ -383,7 +407,12 @@ function connectWebSocket() {
   }
   clearTimeout(reconnectTimer);
 
-  const url = `${WS_BASE}/ws/bounce/${SHARE_TOKEN}?guest_id=${encodeURIComponent(myGuestId)}&name=${encodeURIComponent(myName)}`;
+  var url;
+  if (IS_APP_USER && APP_TOKEN) {
+    url = `${WS_BASE}/ws/bounce/${SHARE_TOKEN}?app_token=${encodeURIComponent(APP_TOKEN)}`;
+  } else {
+    url = `${WS_BASE}/ws/bounce/${SHARE_TOKEN}?guest_id=${encodeURIComponent(myGuestId)}&name=${encodeURIComponent(myName)}`;
+  }
   ws = new WebSocket(url);
 
   ws.onopen = () => {

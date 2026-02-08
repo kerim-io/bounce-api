@@ -13,6 +13,7 @@ from api.dependencies import get_current_user
 from api.routes.websocket import manager as ws_manager
 from api.routes.users import SimpleUserResponse
 from services.tasks import enqueue_notification, payload_to_dict
+from api.routes.checkins import auto_checkout_if_needed
 
 router = APIRouter(prefix="/users", tags=["close-friends"])
 logger = logging.getLogger(__name__)
@@ -583,6 +584,9 @@ async def broadcast_location_to_close_friends(
     current_user.last_location_lon = location.longitude
     current_user.last_location_update = datetime.now(timezone.utc)
     await db.commit()
+
+    # Auto-checkout from venue if user has moved far enough away
+    await auto_checkout_if_needed(db, current_user.id, location.latitude, location.longitude)
 
     # Find all close friends we're sharing location with
     result = await db.execute(

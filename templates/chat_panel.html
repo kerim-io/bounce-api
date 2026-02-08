@@ -251,7 +251,7 @@ function restoreChat() {
       if (m.system) {
         renderSystemMsg(m.text);
       } else {
-        renderChatMsg(m.sender, m.text, m.isAi, m.isSelf, m.timestamp);
+        renderChatMsg(m.sender, m.text, m.isAi, m.isSelf, m.timestamp, m.pic);
       }
     });
   } catch(e) {}
@@ -278,9 +278,9 @@ function escapeHtml(str) {
   return d.innerHTML;
 }
 
-function appendChatMsg(sender, text, isAi, isSelf, timestamp) {
-  renderChatMsg(sender, text, isAi, isSelf, timestamp);
-  saveChatMsg({ sender: sender, text: text, isAi: isAi, isSelf: isSelf, timestamp: timestamp });
+function appendChatMsg(sender, text, isAi, isSelf, timestamp, pic) {
+  renderChatMsg(sender, text, isAi, isSelf, timestamp, pic);
+  saveChatMsg({ sender: sender, text: text, isAi: isAi, isSelf: isSelf, timestamp: timestamp, pic: pic || null });
 
   // If collapsed, bump unread
   if (feedSnap === 'min') {
@@ -299,7 +299,8 @@ function sendChat() {
   var text = input.value.trim();
   if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type: 'chat_message', text: text }));
-  appendChatMsg(myName, text, false, true, Date.now() / 1000);
+  var selfPic = IS_APP_USER ? APP_USER_PIC : null;
+  appendChatMsg(myName, text, false, true, Date.now() / 1000, selfPic);
   input.value = '';
 }
 
@@ -318,8 +319,18 @@ handleMessage = function(msg) {
   _origHandleMessage(msg);
 
   if (msg.type === 'chat_message') {
-    if (!msg.is_ai && msg.guest_id === myGuestId) return;
-    appendChatMsg(msg.sender, msg.text, msg.is_ai, false, msg.timestamp);
+    // Detect if this message is from ourselves
+    var isSelf = false;
+    if (msg.is_ai) {
+      isSelf = false;
+    } else if (IS_APP_USER && msg.user_id === APP_USER_ID) {
+      isSelf = true;
+    } else if (!IS_APP_USER && msg.guest_id === myGuestId) {
+      isSelf = true;
+    }
+    if (isSelf) return; // already appended locally on send
+    var pic = msg.profile_picture || null;
+    appendChatMsg(msg.sender, msg.text, msg.is_ai, false, msg.timestamp, pic);
   }
   if (msg.type === 'chat_history') {
     // Server sends full history — replace local cache and re-render
