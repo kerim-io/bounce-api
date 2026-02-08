@@ -74,8 +74,8 @@ function initFeedSheet() {
   // Restore persisted chat
   restoreChat();
 
-  // Set initial snap
-  snapTo('med', false);
+  // App users start collapsed (they came for the map), guests start at medium
+  snapTo(IS_APP_USER ? 'min' : 'med', false);
 }
 
 function getSnapPx(snap) {
