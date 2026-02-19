@@ -5,7 +5,9 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 import base64
+import json
 import logging
+import httpx
 
 from db.database import get_async_session
 from db.models import VenueFeedMessage, CheckIn, User, Place
@@ -94,7 +96,7 @@ async def get_venue_feed(
     query = (
         select(VenueFeedMessage, User)
         .join(User, VenueFeedMessage.user_id == User.id)
-        .where(VenueFeedMessage.place_id == place_id)
+        .where(and_(VenueFeedMessage.place_id == place_id, VenueFeedMessage.is_hidden == False))
     )
     if before_id is not None:
         query = query.where(VenueFeedMessage.id < before_id)
@@ -202,11 +204,78 @@ async def post_venue_image(
     }
     await manager.send_to_venue_feed(place_id, ws_payload)
 
-    # REST response includes full image
+    # REST response — strip image (client already has it), just return metadata
     return {
         "type": "venue_feed_message",
-        **_format_message(msg, current_user),
+        **_format_message(msg, current_user, ws_safe=True),
     }
+
+
+# ---------- Moderation ----------
+
+CATEGORIZE_PROMPT = """Categorize this reported social media message in one short phrase (e.g. "spam", "harassment", "hate speech", "inappropriate image", "off-topic", "other"). Respond with ONLY the category, nothing else."""
+
+
+async def _groq_categorize(text: str):
+    """Fire-and-forget: ask Groq to categorize a reported message. Returns category string."""
+    if not settings.GROQ_API_KEY:
+        return "uncategorized"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "llama-3.1-8b-instant",
+                    "max_tokens": 20,
+                    "temperature": 0,
+                    "messages": [
+                        {"role": "system", "content": CATEGORIZE_PROMPT},
+                        {"role": "user", "content": text or "(image only, no text)"},
+                    ],
+                },
+            )
+            if resp.status_code == 200:
+                return resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        logger.error(f"Groq categorize error: {e}")
+    return "uncategorized"
+
+
+@router.post("/report/{message_id}")
+async def report_message(
+    message_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Report a message. Groq categorizes it for records. Message stays visible."""
+    result = await db.execute(
+        select(VenueFeedMessage).where(VenueFeedMessage.id == message_id)
+    )
+    msg = result.scalar_one_or_none()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    # Categorize in background, store for admin review
+    import asyncio
+    async def _categorize_and_store():
+        from db.database import create_async_session
+        reason = await _groq_categorize(msg.text)
+        async with create_async_session() as session:
+            result = await session.execute(
+                select(VenueFeedMessage).where(VenueFeedMessage.id == message_id)
+            )
+            m = result.scalar_one_or_none()
+            if m:
+                m.moderation_reason = reason
+                await session.commit()
+        logger.info(f"Report #{message_id} categorized: {reason}")
+    asyncio.create_task(_categorize_and_store())
+
+    return {"reported": True, "message_id": message_id}
 
 
 # ---------- WebSocket endpoint ----------

@@ -375,6 +375,8 @@ class VenueFeedMessage(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     text = Column(Text, nullable=True)
     image = Column(Text, nullable=True)           # base64 data URI
+    is_hidden = Column(Boolean, default=False, nullable=False)
+    moderation_reason = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     user = relationship("User")

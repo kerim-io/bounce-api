@@ -87,6 +87,8 @@ async def run_migrations():
         # Venue feed messages
         "CREATE INDEX IF NOT EXISTS idx_venue_feed_place_id ON venue_feed_messages(place_id)",
         "CREATE INDEX IF NOT EXISTS idx_venue_feed_place_id_desc ON venue_feed_messages(place_id, id DESC)",
+        "ALTER TABLE venue_feed_messages ADD COLUMN IF NOT EXISTS is_hidden BOOLEAN DEFAULT FALSE NOT NULL",
+        "ALTER TABLE venue_feed_messages ADD COLUMN IF NOT EXISTS moderation_reason VARCHAR(500)",
     ]
 
     engine = get_engine()
