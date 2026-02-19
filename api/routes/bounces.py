@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Attendees are considered "present" if seen within this time window
 ATTENDEE_EXPIRY_MINUTES = 15
 # Proximity radius for auto-checkin (in km)
-BOUNCE_PROXIMITY_KM = 0.1  # 100 meters
+BOUNCE_PROXIMITY_KM = 0.01  # 10 meters
 
 
 async def get_venue_photo_url(db: AsyncSession, places_fk_id: Optional[int]) -> Optional[str]:
