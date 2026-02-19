@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/checkins", tags=["checkins"])
 
 # Constants
-CHECKIN_PROXIMITY_METERS = 20  # Must be within 20m to check in
+CHECKIN_PROXIMITY_METERS = 50  # Must be within 50m to check in
 CHECKIN_EXPIRY_HOURS = 24  # Check-ins expire after 24 hours of inactivity
 AUTO_CHECKOUT_RADIUS_METERS = 150  # Auto-checkout when user is >150m from venue (hysteresis)
 
