@@ -145,7 +145,7 @@ async def post_venue_message(
 @router.post("/{place_id}/image")
 async def post_venue_image(
     place_id: str,
-    file: UploadFile = File(...),
+    image: UploadFile = File(...),
     text: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
@@ -156,10 +156,10 @@ async def post_venue_image(
 
     # Validate file type
     allowed_types = ["image/jpeg", "image/jpg", "image/png", "image/webp"]
-    if file.content_type not in allowed_types:
+    if image.content_type not in allowed_types:
         raise HTTPException(status_code=400, detail="Invalid file type. Only JPEG, PNG, WEBP allowed")
 
-    content = await file.read()
+    content = await image.read()
     if len(content) > settings.MAX_FILE_SIZE:
         raise HTTPException(
             status_code=400,
@@ -169,7 +169,7 @@ async def post_venue_image(
     if not await verify_active_checkin(db, current_user.id, place_id):
         raise HTTPException(status_code=403, detail="You must be checked in to this venue to post")
 
-    content_type = file.content_type or "image/jpeg"
+    content_type = image.content_type or "image/jpeg"
     base64_data = base64.b64encode(content).decode("utf-8")
     data_uri = f"data:{content_type};base64,{base64_data}"
 
