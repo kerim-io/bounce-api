@@ -59,8 +59,12 @@ async def fetch_instagram_profile(handle: str) -> InstagramProfile:
                     user_data = data.get("data", {}).get("user", {})
                     profile_pic_url = user_data.get("profile_pic_url_hd") or user_data.get("profile_pic_url")
                     full_name = user_data.get("full_name")
-                except Exception:
-                    pass
+                    if profile_pic_url:
+                        logger.info(f"Instagram API success for {handle}")
+                except Exception as e:
+                    logger.warning(f"Instagram API parse error for {handle}: {e}")
+            else:
+                logger.warning(f"Instagram API returned {response.status_code} for {handle}")
 
             # Method 2: Fallback to scraping profile page
             if not profile_pic_url:
@@ -76,6 +80,8 @@ async def fetch_instagram_profile(handle: str) -> InstagramProfile:
                     timeout=10.0
                 )
 
+                if response.status_code != 200:
+                    logger.warning(f"Instagram HTML scrape returned {response.status_code} for {handle}")
                 if response.status_code == 200:
                     html = response.text
 

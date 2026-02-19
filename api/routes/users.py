@@ -327,6 +327,9 @@ async def update_instagram_handle(
         profile = await fetch_instagram_profile(handle)
         if profile.profile_pic_url:
             current_user.instagram_profile_pic = profile.profile_pic_url
+            logger.info(f"Set IG pic for user {current_user.id} handle={handle}")
+        else:
+            logger.warning(f"Failed to fetch IG pic for user {current_user.id} handle={handle}")
 
     await db.commit()
 
