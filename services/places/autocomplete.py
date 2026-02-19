@@ -81,14 +81,19 @@ async def index_place(
             logger.warning(f"Empty normalized name for place {place_id}, skipping index")
             return False
 
-        # Build index entry: "normalized_name:place_id"
-        index_entry = f"{normalized}:{place_id}"
+        # Build index entries starting from each word so "The Monocle Cafe"
+        # is findable by "monocle" and "cafe", not just "the monocle"
+        words = normalized.split()
+        index_entries = {}
+        for i in range(len(words)):
+            suffix = " ".join(words[i:])
+            index_entries[f"{suffix}:{place_id}"] = 0
 
         # Use pipeline for atomic operations
         pipe = redis.pipeline()
 
-        # 1. Add to prefix index (score=0 for lexicographic ordering)
-        pipe.zadd(AUTOCOMPLETE_INDEX, {index_entry: 0})
+        # 1. Add all suffix entries to prefix index (score=0 for lexicographic ordering)
+        pipe.zadd(AUTOCOMPLETE_INDEX, index_entries)
 
         # 2. Add to geo index (GEOADD uses lng, lat order)
         pipe.geoadd(GEO_INDEX, (lng, lat, place_id))
@@ -125,10 +130,17 @@ async def remove_place_from_index(place_id: str, normalized_name: str) -> bool:
     """
     try:
         redis = await get_redis()
-        index_entry = f"{normalized_name}:{place_id}"
+
+        # Remove all suffix entries for this place
+        words = normalized_name.split()
+        entries_to_remove = []
+        for i in range(len(words)):
+            suffix = " ".join(words[i:])
+            entries_to_remove.append(f"{suffix}:{place_id}")
 
         pipe = redis.pipeline()
-        pipe.zrem(AUTOCOMPLETE_INDEX, index_entry)
+        if entries_to_remove:
+            pipe.zrem(AUTOCOMPLETE_INDEX, *entries_to_remove)
         pipe.zrem(GEO_INDEX, place_id)
         pipe.delete(f"{META_PREFIX}{place_id}")
         await pipe.execute()
