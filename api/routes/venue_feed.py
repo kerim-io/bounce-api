@@ -22,6 +22,7 @@ router = APIRouter(prefix="/venue-feed", tags=["venue-feed"])
 
 MAX_TEXT_LENGTH = 500
 DEFAULT_PAGE_SIZE = 50
+NON_CHECKIN_COOLDOWN_HOURS = 1
 
 
 async def verify_active_checkin(db: AsyncSession, user_id: int, place_id: str) -> bool:
@@ -38,6 +39,27 @@ async def verify_active_checkin(db: AsyncSession, user_id: int, place_id: str) -
         ).limit(1)
     )
     return result.scalar_one_or_none() is not None
+
+
+async def enforce_post_rate(db: AsyncSession, user_id: int, place_id: str):
+    """Checked-in users can post freely. Others get a 1h cooldown per venue."""
+    if await verify_active_checkin(db, user_id, place_id):
+        return
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=NON_CHECKIN_COOLDOWN_HOURS)
+    result = await db.execute(
+        select(VenueFeedMessage.id).where(
+            and_(
+                VenueFeedMessage.user_id == user_id,
+                VenueFeedMessage.place_id == place_id,
+                VenueFeedMessage.created_at >= cutoff,
+            )
+        ).limit(1)
+    )
+    if result.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="You can post once per hour when not checked in to this venue",
+        )
 
 
 def _format_message(msg: VenueFeedMessage, user: User, ws_safe: bool = False) -> dict:
@@ -120,14 +142,13 @@ async def post_venue_message(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ):
-    """Post a text message to the venue feed. Must be checked in."""
+    """Post a text message to the venue feed. Checked-in users post freely, others 1h cooldown."""
     if not body.text or not body.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
     if len(body.text) > MAX_TEXT_LENGTH:
         raise HTTPException(status_code=400, detail=f"Text exceeds {MAX_TEXT_LENGTH} characters")
 
-    if not await verify_active_checkin(db, current_user.id, place_id):
-        raise HTTPException(status_code=403, detail="You must be checked in to this venue to post")
+    await enforce_post_rate(db, current_user.id, place_id)
 
     # Resolve places FK
     place_result = await db.execute(select(Place).where(Place.place_id == place_id))
@@ -160,7 +181,7 @@ async def post_venue_image(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ):
-    """Post an image (with optional text) to the venue feed. Must be checked in."""
+    """Post an image (with optional text) to the venue feed. Checked-in users post freely, others 1h cooldown."""
     if text and len(text) > MAX_TEXT_LENGTH:
         raise HTTPException(status_code=400, detail=f"Text exceeds {MAX_TEXT_LENGTH} characters")
 
@@ -176,8 +197,7 @@ async def post_venue_image(
             detail=f"File size exceeds maximum allowed size of {settings.MAX_FILE_SIZE} bytes",
         )
 
-    if not await verify_active_checkin(db, current_user.id, place_id):
-        raise HTTPException(status_code=403, detail="You must be checked in to this venue to post")
+    await enforce_post_rate(db, current_user.id, place_id)
 
     content_type = image.content_type or "image/jpeg"
     base64_data = base64.b64encode(content).decode("utf-8")
