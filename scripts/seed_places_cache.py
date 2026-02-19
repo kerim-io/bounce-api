@@ -27,15 +27,7 @@ from services.places.autocomplete import index_place, get_indexed_place_count
 
 # Cities to seed with their center coordinates
 CITIES = {
-    "miami": {"lat": 25.7617, "lng": -80.1918, "radius": 15000},
-    "miami_beach": {"lat": 25.7907, "lng": -80.1300, "radius": 8000},
-    "basel": {"lat": 47.5596, "lng": 7.5886, "radius": 10000},
     "london": {"lat": 51.5074, "lng": -0.1278, "radius": 15000},
-    "dubai": {"lat": 25.2048, "lng": 55.2708, "radius": 20000},
-    "new_york": {"lat": 40.7128, "lng": -74.0060, "radius": 15000},
-    "los_angeles": {"lat": 34.0522, "lng": -118.2437, "radius": 20000},
-    "paris": {"lat": 48.8566, "lng": 2.3522, "radius": 12000},
-    "hong_kong": {"lat": 22.3193, "lng": 114.1694, "radius": 12000},
 }
 
 # Venue types to search for (these map to Google Places types)
