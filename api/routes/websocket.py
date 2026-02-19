@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 REDIS_CHANNEL_BROADCAST = "ws:broadcast"
 REDIS_CHANNEL_USER = "ws:user:{user_id}"
 REDIS_CHANNEL_BOUNCE = "ws:bounce:{bounce_id}"
+REDIS_CHANNEL_VENUE_FEED = "ws:venue_feed:{place_id}"
 
 
 class ConnectionManager:
@@ -20,6 +21,7 @@ class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[int, List[WebSocket]] = {}
         self.bounce_connections: Dict[int, List[WebSocket]] = {}  # bounce_id -> guest websockets
+        self.venue_feed_connections: Dict[str, List[WebSocket]] = {}  # place_id -> websockets
         self._subscriber_task: asyncio.Task | None = None
         self._pubsub = None  # Redis pubsub instance for dynamic subscriptions
 
@@ -155,6 +157,63 @@ class ConnectionManager:
             logger.warning(f"Redis send_to_bounce failed, falling back to local: {e}")
             await self._send_to_bounce_local(bounce_id, message)
 
+    # ---- venue feed ----
+
+    async def connect_venue_feed(self, websocket: WebSocket, place_id: str):
+        """Accept and track a WebSocket for a venue feed"""
+        await websocket.accept()
+        is_new = place_id not in self.venue_feed_connections
+        if is_new:
+            self.venue_feed_connections[place_id] = []
+        self.venue_feed_connections[place_id].append(websocket)
+
+        if is_new and self._pubsub is not None:
+            try:
+                channel = REDIS_CHANNEL_VENUE_FEED.format(place_id=place_id)
+                await self._pubsub.subscribe(channel)
+                logger.debug(f"Subscribed to Redis channel for venue feed {place_id}")
+            except Exception as e:
+                logger.warning(f"Failed to subscribe to venue feed channel: {e}")
+
+    def disconnect_venue_feed(self, websocket: WebSocket, place_id: str):
+        """Remove a WebSocket from venue feed tracking"""
+        if place_id in self.venue_feed_connections:
+            if websocket in self.venue_feed_connections[place_id]:
+                self.venue_feed_connections[place_id].remove(websocket)
+            if not self.venue_feed_connections[place_id]:
+                del self.venue_feed_connections[place_id]
+                if self._pubsub is not None:
+                    asyncio.create_task(self._unsubscribe_venue_feed(place_id))
+
+    async def _unsubscribe_venue_feed(self, place_id: str):
+        try:
+            channel = REDIS_CHANNEL_VENUE_FEED.format(place_id=place_id)
+            await self._pubsub.unsubscribe(channel)
+            logger.debug(f"Unsubscribed from Redis channel for venue feed {place_id}")
+        except Exception as e:
+            logger.warning(f"Failed to unsubscribe from venue feed channel: {e}")
+
+    async def _send_to_venue_feed_local(self, place_id: str, message: dict):
+        """Send to all local connections for a venue feed"""
+        dead_connections = []
+        for ws in self.venue_feed_connections.get(place_id, []):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                dead_connections.append(ws)
+        for ws in dead_connections:
+            self.disconnect_venue_feed(ws, place_id)
+
+    async def send_to_venue_feed(self, place_id: str, message: dict):
+        """Send to all venue feed WebSockets across all instances via Redis"""
+        try:
+            redis = await get_redis()
+            channel = REDIS_CHANNEL_VENUE_FEED.format(place_id=place_id)
+            await redis.publish(channel, json.dumps(message))
+        except Exception as e:
+            logger.warning(f"Redis send_to_venue_feed failed, falling back to local: {e}")
+            await self._send_to_venue_feed_local(place_id, message)
+
     async def start_subscriber(self):
         """Start Redis subscriber for cross-instance messages"""
         if self._subscriber_task is not None:
@@ -177,8 +236,11 @@ class ConnectionManager:
                 # Subscribe to bounce channels for connected guests
                 for bounce_id in self.bounce_connections.keys():
                     await pubsub.subscribe(REDIS_CHANNEL_BOUNCE.format(bounce_id=bounce_id))
+                # Subscribe to venue feed channels
+                for place_id in self.venue_feed_connections.keys():
+                    await pubsub.subscribe(REDIS_CHANNEL_VENUE_FEED.format(place_id=place_id))
 
-                logger.info(f"Redis subscriber started, subscribed to {len(self.active_connections)} user channels, {len(self.bounce_connections)} bounce channels")
+                logger.info(f"Redis subscriber started, subscribed to {len(self.active_connections)} user channels, {len(self.bounce_connections)} bounce channels, {len(self.venue_feed_connections)} venue feed channels")
 
                 async for msg in pubsub.listen():
                     if msg["type"] != "message":
@@ -196,6 +258,9 @@ class ConnectionManager:
                         elif channel.startswith("ws:user:"):
                             user_id = int(channel.split(":")[-1])
                             await self._send_local(data, user_id)
+                        elif channel.startswith("ws:venue_feed:"):
+                            place_id = channel.split(":", 2)[-1]
+                            await self._send_to_venue_feed_local(place_id, data)
                         elif channel.startswith("ws:bounce:"):
                             bounce_id = int(channel.split(":")[-1])
                             await self._send_to_bounce_local(bounce_id, data)

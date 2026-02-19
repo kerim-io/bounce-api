@@ -292,6 +292,7 @@ class Place(Base):
     photos = relationship("GooglePic", back_populates="place", cascade="all, delete-orphan")
     bounces = relationship("Bounce", back_populates="place")
     check_ins = relationship("CheckIn", back_populates="place")
+    feed_messages = relationship("VenueFeedMessage", back_populates="place")
 
 
 class GooglePic(Base):
@@ -362,3 +363,19 @@ class BounceGuestLocation(Base):
     __table_args__ = (
         UniqueConstraint('bounce_id', 'guest_id', name='uq_bounce_guest_location'),
     )
+
+
+class VenueFeedMessage(Base):
+    """Messages posted to a venue's live feed by checked-in users."""
+    __tablename__ = "venue_feed_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    place_id = Column(String(255), nullable=False, index=True)        # Google Places ID
+    places_fk_id = Column(Integer, ForeignKey("places.id", ondelete="SET NULL"), nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    text = Column(Text, nullable=True)
+    image = Column(Text, nullable=True)           # base64 data URI
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    user = relationship("User")
+    place = relationship("Place", back_populates="feed_messages")

@@ -23,6 +23,7 @@ from api.routes import (
     geocoding,
     notifications,
     users,
+    venue_feed,
     websocket,
 )
 from api.routes.close_friends import start_silent_push_loop, stop_silent_push_loop
@@ -133,6 +134,7 @@ app.include_router(notifications.router)
 app.include_router(checkins.router)
 app.include_router(admin.router)
 app.include_router(bounce_share.router)
+app.include_router(venue_feed.router)
 # app.include_router(instagram_verify.router)  # Uncomment when ready to use
 
 

@@ -84,6 +84,9 @@ async def run_migrations():
         # Bounce share link
         "ALTER TABLE bounces ADD COLUMN IF NOT EXISTS share_token VARCHAR(64) UNIQUE",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_bounces_share_token ON bounces(share_token)",
+        # Venue feed messages
+        "CREATE INDEX IF NOT EXISTS idx_venue_feed_place_id ON venue_feed_messages(place_id)",
+        "CREATE INDEX IF NOT EXISTS idx_venue_feed_place_id_desc ON venue_feed_messages(place_id, id DESC)",
     ]
 
     engine = get_engine()
