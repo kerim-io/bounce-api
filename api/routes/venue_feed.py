@@ -38,15 +38,22 @@ async def verify_active_checkin(db: AsyncSession, user_id: int, place_id: str) -
     return result.scalar_one_or_none() is not None
 
 
-def _format_message(msg: VenueFeedMessage, user: User, include_image: bool = True) -> dict:
+def _format_message(msg: VenueFeedMessage, user: User, ws_safe: bool = False) -> dict:
+    """Format a feed message. When ws_safe=True, strip large base64 blobs."""
+    image = msg.image
+    profile_pic = user.profile_picture or user.instagram_profile_pic
+    if ws_safe:
+        image = None
+        if profile_pic and profile_pic.startswith("data:"):
+            profile_pic = None
     return {
         "id": msg.id,
         "place_id": msg.place_id,
         "user_id": msg.user_id,
         "nickname": user.nickname,
-        "profile_picture": user.profile_picture or user.instagram_profile_pic,
+        "profile_picture": profile_pic,
         "text": msg.text,
-        "image": msg.image if include_image else None,
+        "image": image,
         "has_image": msg.image is not None,
         "created_at": msg.created_at.isoformat() if msg.created_at else None,
     }
@@ -191,7 +198,7 @@ async def post_venue_image(
     # WS broadcast without image data (too large for WS frame)
     ws_payload = {
         "type": "venue_feed_message",
-        **_format_message(msg, current_user, include_image=False),
+        **_format_message(msg, current_user, ws_safe=True),
     }
     await manager.send_to_venue_feed(place_id, ws_payload)
 
