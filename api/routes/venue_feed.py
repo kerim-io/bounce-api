@@ -38,7 +38,7 @@ async def verify_active_checkin(db: AsyncSession, user_id: int, place_id: str) -
     return result.scalar_one_or_none() is not None
 
 
-def _format_message(msg: VenueFeedMessage, user: User) -> dict:
+def _format_message(msg: VenueFeedMessage, user: User, include_image: bool = True) -> dict:
     return {
         "id": msg.id,
         "place_id": msg.place_id,
@@ -46,7 +46,8 @@ def _format_message(msg: VenueFeedMessage, user: User) -> dict:
         "nickname": user.nickname,
         "profile_picture": user.profile_picture or user.instagram_profile_pic,
         "text": msg.text,
-        "image": msg.image,
+        "image": msg.image if include_image else None,
+        "has_image": msg.image is not None,
         "created_at": msg.created_at.isoformat() if msg.created_at else None,
     }
 
@@ -187,13 +188,18 @@ async def post_venue_image(
     await db.commit()
     await db.refresh(msg)
 
-    payload = {
+    # WS broadcast without image data (too large for WS frame)
+    ws_payload = {
+        "type": "venue_feed_message",
+        **_format_message(msg, current_user, include_image=False),
+    }
+    await manager.send_to_venue_feed(place_id, ws_payload)
+
+    # REST response includes full image
+    return {
         "type": "venue_feed_message",
         **_format_message(msg, current_user),
     }
-    await manager.send_to_venue_feed(place_id, payload)
-
-    return payload
 
 
 # ---------- WebSocket endpoint ----------
