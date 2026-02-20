@@ -73,6 +73,12 @@ async def run_migrations():
         "CREATE INDEX IF NOT EXISTS idx_checkins_places_fk ON check_ins(places_fk_id)",
         "CREATE INDEX IF NOT EXISTS idx_checkins_last_seen ON check_ins(last_seen_at)",
         "CREATE INDEX IF NOT EXISTS idx_checkins_active ON check_ins(is_active) WHERE is_active = true",
+        # Deactivate duplicate active check-ins (keep only the most recent per user)
+        """UPDATE check_ins SET is_active = false
+           WHERE is_active = true AND id NOT IN (
+               SELECT MAX(id) FROM check_ins WHERE is_active = true GROUP BY user_id
+           )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_checkins_one_active_per_user ON check_ins(user_id) WHERE is_active = true",
         # Follows table - close friend feature
         "ALTER TABLE follows ADD COLUMN IF NOT EXISTS is_close_friend BOOLEAN DEFAULT FALSE",
         # Performance indexes for high-traffic queries

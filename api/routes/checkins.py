@@ -220,6 +220,8 @@ class VenueCheckInResponse(BaseModel):
     venue_name: Optional[str]
     checked_in_at: datetime
     is_active: bool
+    venue_lat: Optional[float] = None
+    venue_lng: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -368,56 +370,50 @@ async def checkin_to_venue(
             detail=f"You must be within {CHECKIN_PROXIMITY_METERS}m of the venue to check in. You are {int(distance)}m away."
         )
 
-    # Check for existing active check-in at this venue
-    expiry_time = datetime.now(timezone.utc) - timedelta(hours=CHECKIN_EXPIRY_HOURS)
-    existing_checkin = await db.execute(
-        select(CheckIn).where(
-            and_(
-                CheckIn.user_id == current_user.id,
-                CheckIn.place_id == place_id,
-                CheckIn.is_active == True,
-                CheckIn.last_seen_at >= expiry_time
-            )
-        )
-    )
-    existing = existing_checkin.scalar_one_or_none()
-
-    if existing:
-        # Update last_seen_at to refresh the check-in
-        existing.last_seen_at = datetime.now(timezone.utc)
-        existing.latitude = checkin_data.latitude
-        existing.longitude = checkin_data.longitude
-        await db.commit()
-        await db.refresh(existing)
-
-        return VenueCheckInResponse(
-            id=existing.id,
-            user_id=existing.user_id,
-            place_id=place_id,
-            venue_name=place.name,
-            checked_in_at=existing.created_at,
-            is_active=existing.is_active
-        )
-
-    # Move any other active check-ins for this user to history (user can only be at one place)
+    # Lock ALL active check-ins for this user to prevent race conditions
     result = await db.execute(
         select(CheckIn).where(
             and_(
                 CheckIn.user_id == current_user.id,
-                CheckIn.is_active == True
+                CheckIn.is_active == True,
             )
-        )
+        ).with_for_update()
     )
+    active_checkins = result.scalars().all()
+
+    # Separate: existing at this venue vs other venues
+    existing_here = None
     old_place_ids = []
-    for old_checkin in result.scalars().all():
-        if old_checkin.place_id:
-            old_place_ids.append(old_checkin.place_id)
-        # Move to history and delete
-        await move_checkin_to_history(db, old_checkin)
+    for ci in active_checkins:
+        if ci.place_id == place_id:
+            existing_here = ci
+        else:
+            if ci.place_id:
+                old_place_ids.append(ci.place_id)
+            await move_checkin_to_history(db, ci)
 
     # Invalidate cache for old venues
     for old_place_id in old_place_ids:
         await cache_delete(f"venue_count:{old_place_id}")
+
+    if existing_here:
+        # Already checked in here — refresh timestamp
+        existing_here.last_seen_at = datetime.now(timezone.utc)
+        existing_here.latitude = checkin_data.latitude
+        existing_here.longitude = checkin_data.longitude
+        await db.commit()
+        await db.refresh(existing_here)
+
+        return VenueCheckInResponse(
+            id=existing_here.id,
+            user_id=existing_here.user_id,
+            place_id=place_id,
+            venue_name=place.name,
+            checked_in_at=existing_here.created_at,
+            is_active=existing_here.is_active,
+            venue_lat=place.latitude,
+            venue_lng=place.longitude,
+        )
 
     # Create new check-in
     checkin = CheckIn(
@@ -528,7 +524,9 @@ async def checkin_to_venue(
         place_id=place_id,
         venue_name=place.name,
         checked_in_at=checkin.created_at,
-        is_active=checkin.is_active
+        is_active=checkin.is_active,
+        venue_lat=place.latitude,
+        venue_lng=place.longitude,
     )
 
 
