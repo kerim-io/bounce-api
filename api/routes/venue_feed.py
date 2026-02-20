@@ -231,6 +231,38 @@ async def post_venue_image(
     }
 
 
+# ---------- Delete ----------
+
+
+@router.delete("/{message_id}")
+async def delete_venue_message(
+    message_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Delete a message. Only the author can delete their own message."""
+    result = await db.execute(
+        select(VenueFeedMessage).where(VenueFeedMessage.id == message_id)
+    )
+    msg = result.scalar_one_or_none()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if msg.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your message")
+
+    place_id = msg.place_id
+    await db.delete(msg)
+    await db.commit()
+
+    await manager.send_to_venue_feed(place_id, {
+        "type": "venue_feed_remove",
+        "id": message_id,
+        "place_id": place_id,
+    })
+
+    return {"deleted": True, "message_id": message_id}
+
+
 # ---------- Moderation ----------
 
 CATEGORIZE_PROMPT = """Categorize this reported social media message in one short phrase (e.g. "spam", "harassment", "hate speech", "inappropriate image", "off-topic", "other"). Respond with ONLY the category, nothing else."""
