@@ -59,6 +59,7 @@ class NearbyPlace(BaseModel):
     category: str
     types: List[str]
     photo_url: Optional[str]
+    source: str  # "redis" or "google"
 
 
 class NearbyResponse(BaseModel):
@@ -165,6 +166,7 @@ async def _search_redis_geo(
                 category=category,
                 types=place_types,
                 photo_url=meta.get("photo_url"),
+                source="redis",
             ))
 
         return places
@@ -251,6 +253,7 @@ async def _search_google(
                 category=category,
                 types=place_types,
                 photo_url=photo_url,
+                source="google",
             ))
 
         # Index to Redis in background
