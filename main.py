@@ -21,6 +21,7 @@ from api.routes import (
     checkins,
     close_friends,
     geocoding,
+    nearby,
     notifications,
     users,
     venue_feed,
@@ -135,6 +136,7 @@ app.include_router(checkins.router)
 app.include_router(admin.router)
 app.include_router(bounce_share.router)
 app.include_router(venue_feed.router)
+app.include_router(nearby.router)
 # app.include_router(instagram_verify.router)  # Uncomment when ready to use
 
 
