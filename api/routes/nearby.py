@@ -91,6 +91,8 @@ async def get_nearby_places(
     # 1. Check result cache
     cached = await cache_get(cache_key, reset_ttl=False)
     if cached is not None:
+        for p in cached:
+            p["source"] = "redis"
         return NearbyResponse(places=cached, category=category, from_cache=True)
 
     # 2. Try Redis geo-index
