@@ -59,7 +59,7 @@ class NearbyPlace(BaseModel):
     category: str
     types: List[str]
     photo_url: Optional[str]
-    source: str  # "redis" or "google"
+    source: str = "unknown"  # "redis" or "google"
 
 
 class NearbyResponse(BaseModel):
