@@ -340,12 +340,17 @@ async def places_autocomplete(
         limit=10
     )
 
-    # 2. If we have any cached results, return them immediately (avoid hitting Places API)
+    # 2. If cached results exist AND at least one is within 100km, return them
     if cached_results:
-        predictions = [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results]
-        return AutocompleteResponse(predictions=predictions, from_cache=True)
+        has_local = any(
+            (p.get("distance_meters") or float("inf")) < 100_000
+            for p in cached_results
+        )
+        if has_local:
+            predictions = [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results]
+            return AutocompleteResponse(predictions=predictions, from_cache=True)
 
-    # 3. Fall back to Google API (only when Redis has no matches)
+    # 3. Fall back to Google API (no matches or none within 100km)
     if not settings.GOOGLE_MAPS_API_KEY:
         # If no API key, return whatever we have from cache
         if cached_results:
