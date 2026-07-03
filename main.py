@@ -23,6 +23,7 @@ from api.routes import (
     geocoding,
     nearby,
     notifications,
+    suggestions,
     users,
     venue_feed,
     websocket,
@@ -137,6 +138,7 @@ app.include_router(admin.router)
 app.include_router(bounce_share.router)
 app.include_router(venue_feed.router)
 app.include_router(nearby.router)
+app.include_router(suggestions.router)
 # app.include_router(instagram_verify.router)  # Uncomment when ready to use
 
 

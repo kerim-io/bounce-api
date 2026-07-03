@@ -24,3 +24,4 @@ aioapns==3.1
 rq==1.16.0
 instagrapi==2.0.3
 faker==22.0.0
+numpy>=1.26,<3

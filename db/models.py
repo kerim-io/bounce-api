@@ -365,6 +365,40 @@ class BounceGuestLocation(Base):
     )
 
 
+class UserPlaceEvent(Base):
+    """Weak implicit signals (place views, searches) feeding the recommender.
+
+    Check-ins are strong labels; these are the low-weight positives — a user
+    looking at a venue's details or opening its feed without ever checking in.
+    """
+    __tablename__ = "user_place_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    place_id = Column(String(255), nullable=False, index=True)   # Google Places ID
+    event_type = Column(String(30), nullable=False)              # place_view | feed_view
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    user = relationship("User")
+
+
+class BounceChatMessage(Base):
+    """Persisted bounce room chat — shared stream for app users, web guests, and the AI."""
+    __tablename__ = "bounce_chat_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    bounce_id = Column(Integer, ForeignKey("bounces.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)  # app users
+    guest_id = Column(String(64), nullable=True)                                           # web guests
+    sender_name = Column(String(100), nullable=False)
+    text = Column(Text, nullable=False)
+    is_ai = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    bounce = relationship("Bounce")
+    user = relationship("User")
+
+
 class VenueFeedMessage(Base):
     """Messages posted to a venue's live feed by checked-in users."""
     __tablename__ = "venue_feed_messages"

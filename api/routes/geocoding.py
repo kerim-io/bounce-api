@@ -686,6 +686,10 @@ async def get_place_details(
 
     Example: /geocoding/places/details/ChIJN1t_tDeuEmsRUsoyG83frY4
     """
+    # Weak implicit signal for the recommender (searched → viewed details)
+    from services.recommendations import log_place_event
+    log_place_event(current_user.id, place_id, "place_view")
+
     # Check cache first (place details rarely change)
     cache_key = f"place_details:{place_id}"
     cached = await cache_get(cache_key)
