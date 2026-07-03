@@ -1,0 +1,138 @@
+{% extends "admin/base.html" %}
+{% block title %}Users Map{% endblock %}
+
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h1>Users Map</h1>
+    <div id="legend" style="font-size:13px;display:flex;gap:16px;align-items:center">
+        <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#22c55e"></span> Online</span>
+        <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#9ca3af"></span> Offline</span>
+        <span id="user-count"></span>
+    </div>
+</div>
+<div id="map" style="width:100%;height:calc(100vh - 140px);border-radius:8px;overflow:hidden"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let map, infoWindow;
+let markers = {};  // userId -> google.maps.marker.AdvancedMarkerElement
+
+function initMap() {
+    map = new google.maps.Map(document.getElementById('map'), {
+        center: {lat: 25.79, lng: -80.13},
+        zoom: 13,
+        mapId: 'admin_users_map',
+        styles: [{featureType:'poi', stylers:[{visibility:'off'}]}]
+    });
+    infoWindow = new google.maps.InfoWindow();
+    fetchLocations();
+    setInterval(fetchLocations, 10000);
+}
+
+async function fetchLocations() {
+    try {
+        const res = await fetch('/admin/api/users/locations');
+        if (!res.ok) return;
+        const users = await res.json();
+        updateMarkers(users);
+        document.getElementById('user-count').textContent = users.length + ' users';
+    } catch(e) {}
+}
+
+function updateMarkers(users) {
+    const seenIds = new Set();
+
+    users.forEach(u => {
+        seenIds.add(u.id);
+        const pos = {lat: u.latitude, lng: u.longitude};
+
+        if (markers[u.id]) {
+            // Update existing marker position
+            markers[u.id].position = pos;
+            // Update pin content (online status may have changed)
+            markers[u.id].content = buildPin(u);
+        } else {
+            // Create new marker
+            const marker = new google.maps.marker.AdvancedMarkerElement({
+                map: map,
+                position: pos,
+                content: buildPin(u),
+                title: u.nickname || 'User ' + u.id
+            });
+            marker.addListener('click', () => {
+                const lastSeen = u.last_seen ? new Date(u.last_seen).toLocaleString() : 'unknown';
+                let html = '<div style="font-family:system-ui;min-width:160px">';
+                html += '<strong>' + (u.nickname || 'User ' + u.id) + '</strong>';
+                html += '<br><span style="color:' + (u.is_online ? '#22c55e' : '#9ca3af') + '">';
+                html += u.is_online ? 'Online' : 'Offline';
+                html += '</span>';
+                html += '<br><small>Last seen: ' + lastSeen + '</small>';
+                if (u.venue_name) {
+                    html += '<br><small>Checked in: ' + u.venue_name + '</small>';
+                }
+                html += '</div>';
+                infoWindow.setContent(html);
+                infoWindow.open(map, marker);
+            });
+            markers[u.id] = marker;
+        }
+    });
+
+    // Remove markers for users no longer in the list
+    Object.keys(markers).forEach(id => {
+        if (!seenIds.has(Number(id))) {
+            markers[id].map = null;
+            delete markers[id];
+        }
+    });
+}
+
+function buildPin(u) {
+    const el = document.createElement('div');
+    el.style.cssText = 'display:flex;flex-direction:column;align-items:center;cursor:pointer';
+
+    const ring = document.createElement('div');
+    const borderColor = u.is_online ? '#22c55e' : '#9ca3af';
+    ring.style.cssText = 'width:40px;height:40px;border-radius:50%;border:3px solid ' + borderColor +
+        ';overflow:hidden;background:#333;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.4)';
+
+    if (u.profile_pic) {
+        const img = document.createElement('img');
+        img.src = u.profile_pic;
+        img.style.cssText = 'width:100%;height:100%;object-fit:cover';
+        img.onerror = function() {
+            this.replaceWith(makeInitial(u.nickname));
+        };
+        ring.appendChild(img);
+    } else {
+        ring.appendChild(makeInitial(u.nickname));
+    }
+    el.appendChild(ring);
+
+    if (u.nickname) {
+        const label = document.createElement('div');
+        label.textContent = u.nickname;
+        label.style.cssText = 'margin-top:2px;background:rgba(0,0,0,.7);color:#fff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:600;white-space:nowrap;max-width:80px;overflow:hidden;text-overflow:ellipsis';
+        el.appendChild(label);
+    }
+
+    if (u.venue_name) {
+        const venue = document.createElement('div');
+        venue.textContent = u.venue_name;
+        venue.style.cssText = 'margin-top:1px;background:rgba(74,158,255,.8);color:#fff;padding:1px 5px;border-radius:3px;font-size:8px;font-weight:600;white-space:nowrap;max-width:90px;overflow:hidden;text-overflow:ellipsis';
+        el.appendChild(venue);
+    }
+
+    return el;
+}
+
+function makeInitial(nickname) {
+    const span = document.createElement('span');
+    span.textContent = (nickname || '?')[0].toUpperCase();
+    span.style.cssText = 'font-size:16px;font-weight:bold;color:#fff;font-family:system-ui';
+    return span;
+}
+</script>
+<script async src="https://maps.googleapis.com/maps/api/js?key={{ google_maps_api_key }}&callback=initMap&libraries=marker"></script>
+{% endblock %}

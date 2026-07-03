@@ -20,6 +20,7 @@ from core.config import settings
 from api.routes.websocket import manager as ws_manager
 from services.geofence import haversine_distance
 from services.cache import cache_get, cache_set, cache_delete
+from services.redis import get_redis
 from services.tasks import enqueue_notification, payload_to_dict
 from api.routes.checkins import auto_checkout_if_needed
 from services.instagram import fetch_instagram_profile
@@ -943,6 +944,30 @@ async def update_location(
             message=f"You're {round(distance_km, 2)} km from Art Basel Miami. Get closer to post and like!",
             distance_km=round(distance_km, 2)
         )
+
+
+class HeartbeatRequest(BaseModel):
+    latitude: float
+    longitude: float
+
+
+@router.post("/me/heartbeat", status_code=204)
+async def heartbeat(
+    data: HeartbeatRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Location heartbeat — called every ~30s by the iOS app.
+    Updates the user's last known position and sets a Redis online flag with 90s TTL.
+    """
+    current_user.last_location_lat = data.latitude
+    current_user.last_location_lon = data.longitude
+    current_user.last_location_update = datetime.now(timezone.utc)
+    await db.commit()
+
+    r = await get_redis()
+    await r.set(f"user:alive:{current_user.id}", "1", ex=90)
 
 
 @router.delete("/me", response_model=DeleteAccountResponse)

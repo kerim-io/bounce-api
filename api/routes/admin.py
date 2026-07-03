@@ -11,6 +11,8 @@ from db.database import get_async_session
 from db.models import User, CheckIn, Bounce, BounceInvite, BounceAttendee, Follow, Place, CheckInHistory
 from api.dependencies import get_admin_user
 from services.auth_service import create_access_token
+from services.redis import get_redis
+from core.config import settings
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 templates = Jinja2Templates(directory="templates")
@@ -575,3 +577,71 @@ async def admin_follow_delete(
     await db.commit()
 
     return RedirectResponse(url="/admin/follows", status_code=302)
+
+
+# ============================================================================
+# USERS MAP (live location)
+# ============================================================================
+
+@router.get("/api/users/locations")
+async def admin_users_locations(
+    db: AsyncSession = Depends(get_async_session),
+    admin: User = Depends(get_admin_user)
+):
+    """JSON endpoint: all users with a known location, online status, and venue if checked in."""
+    from sqlalchemy.orm import aliased
+
+    # Users that have reported a location at least once
+    result = await db.execute(
+        select(User).where(User.last_location_lat.isnot(None))
+    )
+    users = result.scalars().all()
+
+    if not users:
+        return []
+
+    # Bulk-fetch active check-ins with venue info
+    active_checkins_result = await db.execute(
+        select(CheckIn).where(CheckIn.is_active == True)
+    )
+    active_checkins = {ci.user_id: ci for ci in active_checkins_result.scalars().all()}
+
+    # Bulk-check Redis online flags
+    r = await get_redis()
+    user_ids = [u.id for u in users]
+    keys = [f"user:alive:{uid}" for uid in user_ids]
+    alive_values = await r.mget(keys)
+    alive_set = {uid for uid, val in zip(user_ids, alive_values) if val}
+
+    out = []
+    for u in users:
+        ci = active_checkins.get(u.id)
+        out.append({
+            "id": u.id,
+            "nickname": u.nickname,
+            "profile_pic": u.profile_picture or u.instagram_profile_pic,
+            "latitude": u.last_location_lat,
+            "longitude": u.last_location_lon,
+            "is_online": u.id in alive_set,
+            "last_seen": u.last_location_update.isoformat() if u.last_location_update else None,
+            "venue_name": ci.location_name if ci else None,
+            "place_id": ci.place_id if ci else None,
+        })
+
+    return out
+
+
+@router.get("/users/map", response_class=HTMLResponse)
+async def admin_users_map(
+    request: Request,
+    admin: User = Depends(get_admin_user)
+):
+    """Render the live users map page."""
+    return templates.TemplateResponse(
+        "admin/users/map.html",
+        {
+            "request": request,
+            "admin": admin,
+            "google_maps_api_key": settings.GOOGLE_MAPS_API_KEY,
+        }
+    )
