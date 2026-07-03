@@ -314,13 +314,14 @@ async def get_venues_with_checkins_in_area(
         # Filter by distance using venue coordinates from Place table
         distance = haversine_distance(lat, lng, place.latitude, place.longitude)
         if distance <= radius:
-            # Get photos
+            # Get photos — stable /img URLs (key stays server-side; a bare
+            # photo_reference is not a usable URL, so never fall back to it)
             photos = []
             pics_result = await db.execute(
                 select(GooglePic).where(GooglePic.place_id == place.id).limit(3)
             )
-            for pic in pics_result.scalars().all():
-                photos.append({"url": pic.photo_url or pic.photo_reference})
+            for i, _pic in enumerate(pics_result.scalars().all()):
+                photos.append({"url": f"/img/place/{place.id}/{i}"})
 
             venues.append(VenueWithCheckInsResponse(
                 place_id=row.place_id,

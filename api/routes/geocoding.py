@@ -13,7 +13,7 @@ from services.geocoding import GeocodingService, LocationResult, ReverseGeocodeR
 from api.dependencies import get_current_user
 from db.models import User
 from core.config import settings
-from services.cache import cache_get, cache_set
+from services.cache import cache_get, cache_set, single_flight
 from services.places.autocomplete import (
     global_autocomplete_search,
     index_place as index_place_to_cache
@@ -148,6 +148,7 @@ class PlacePrediction(BaseModel):
     photo_url: Optional[str] = None  # First photo URL
     types: List[str] = []  # Venue types (bar, restaurant, cafe, etc.)
     from_cache: bool = False  # True if from Redis cache, False if from Google API
+    scope: str = "nearby"  # "nearby" (local lane) or "global" (far match kept on relevance)
 
 
 class PlacePhoto(BaseModel):
@@ -225,15 +226,36 @@ async def fetch_place_details_for_autocomplete(
     """
     # Check cache first - reuse place details across all searches
     cache_key = f"place_details:{place_id}"
+
+    def _from_cached(cached: dict):
+        photos = cached.get("photos", [])
+        return (
+            cached.get("latitude"),
+            cached.get("longitude"),
+            photos[0].get("url") if photos else None,
+            cached.get("types", []),
+        )
+
     cached = await cache_get(cache_key)
     if cached:
-        lat = cached.get("latitude")
-        lng = cached.get("longitude")
-        photos = cached.get("photos", [])
-        photo_url = photos[0].get("url") if photos else None
-        types = cached.get("types", [])
-        return lat, lng, photo_url, types
+        return _from_cached(cached)
 
+    # Single-flight: concurrent searches for the same place fetch Google once
+    flight = await single_flight(cache_key)
+    async with flight:
+        cached = await cache_get(cache_key)
+        if cached:
+            return _from_cached(cached)
+        return await _fetch_details_from_google(session, place_id, ssl_ctx, api_key, cache_key)
+
+
+async def _fetch_details_from_google(
+    session: aiohttp.ClientSession,
+    place_id: str,
+    ssl_ctx,
+    api_key: str,
+    cache_key: str,
+) -> tuple[Optional[float], Optional[float], Optional[str], List[str]]:
     params = {
         "place_id": place_id,
         "key": api_key,
@@ -245,7 +267,7 @@ async def fetch_place_details_for_autocomplete(
             data = await response.json()
 
             if data.get("status") != "OK":
-                return None, None, None
+                return None, None, None, []
 
             result = data.get("result", {})
             location = result.get("geometry", {}).get("location", {})
@@ -317,6 +339,55 @@ async def _index_predictions_to_global_cache(predictions: List[PlacePrediction])
             )
 
 
+LOCAL_SCOPE_METERS = 100_000  # beyond this a result is "global" scope
+
+
+def _text_match_quality(name: str, query: str) -> float:
+    """How well a venue name matches the typed query. 3 = exact, 2 = prefix,
+    1 = substring, 0.5 = only matched via Google's fuzzier signals."""
+    q = query.lower().strip()
+    n = (name or "").lower().strip()
+    if not q or not n:
+        return 0.5
+    if n == q:
+        return 3.0
+    if n.startswith(q):
+        return 2.0
+    if q in n:
+        return 1.0
+    return 0.5
+
+
+def _blend_rank(predictions: List["PlacePrediction"], query: str, limit: int = 10) -> List["PlacePrediction"]:
+    """Two-lane ranking. Local results are ordered by (match quality, distance).
+    Far results are tagged scope='global' and strong matches get up to 3
+    reserved slots at the end of the list instead of being truncated away."""
+    local, far = [], []
+    for p in predictions:
+        if p.distance_meters is not None and p.distance_meters >= LOCAL_SCOPE_METERS:
+            p.scope = "global"
+            far.append(p)
+        else:
+            p.scope = "nearby"
+            local.append(p)
+
+    local.sort(key=lambda p: (
+        -_text_match_quality(p.name, query),
+        p.distance_meters if p.distance_meters is not None else 50_000,
+    ))
+    far.sort(key=lambda p: (
+        -_text_match_quality(p.name, query),
+        p.distance_meters or 0,
+    ))
+
+    strong_far = [p for p in far if _text_match_quality(p.name, query) >= 2.0][:3]
+    result = local[:limit - len(strong_far)] + strong_far
+    if len(result) < limit:
+        remaining = [p for p in far if p not in strong_far]
+        result += remaining[:limit - len(result)]
+    return result
+
+
 @router.get("/places/autocomplete", response_model=AutocompleteResponse)
 async def places_autocomplete(
     query: str = Query(..., min_length=2, description="Search query"),
@@ -347,14 +418,18 @@ async def places_autocomplete(
             for p in cached_results
         )
         if has_local:
-            predictions = [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results]
+            predictions = _blend_rank(
+                [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results], query
+            )
             return AutocompleteResponse(predictions=predictions, from_cache=True)
 
     # 3. Fall back to Google API (no matches or none within 100km)
     if not settings.GOOGLE_MAPS_API_KEY:
         # If no API key, return whatever we have from cache
         if cached_results:
-            predictions = [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results]
+            predictions = _blend_rank(
+                [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results], query
+            )
             return AutocompleteResponse(predictions=predictions, from_cache=True)
         raise HTTPException(
             status_code=503,
@@ -395,8 +470,10 @@ async def places_autocomplete(
         except Exception:
             return []
 
-    async def _text_search_request(session, ssl_ctx):
-        """Fire a text search request (no type filter) to catch places autocomplete misses."""
+    async def _text_search_request(session, ssl_ctx, biased: bool = True):
+        """Fire a text search request (no type filter) to catch places autocomplete misses.
+        biased=False = the GLOBAL lane: no location bias, so a specifically-named
+        venue in another city is still findable (London user -> Munich venue)."""
         try:
             ts_headers = {
                 "Content-Type": "application/json",
@@ -404,7 +481,7 @@ async def places_autocomplete(
                 "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.photos",
             }
             body = {"textQuery": query, "maxResultCount": 5}
-            if location_bias:
+            if biased and location_bias:
                 body["locationBias"] = location_bias
             async with session.post(GOOGLE_PLACES_TEXT_SEARCH_URL, headers=ts_headers, json=body, ssl=ssl_ctx) as resp:
                 if resp.status != 200:
@@ -417,12 +494,25 @@ async def places_autocomplete(
     try:
         ssl_ctx = get_ssl_context()
         async with aiohttp.ClientSession() as session:
-            # Fire two typed autocomplete batches + one text search in parallel
-            results_a, results_b, text_results = await asyncio.gather(
+            # Local lane: two typed autocomplete batches + biased text search.
+            # Global lane: unbiased text search (only for queries specific
+            # enough to be a name, not browsing).
+            run_global_lane = len(query.strip()) >= 4 and location_bias is not None
+            lanes = [
                 _autocomplete_request(session, ac_bodies[0], ssl_ctx),
                 _autocomplete_request(session, ac_bodies[1], ssl_ctx),
-                _text_search_request(session, ssl_ctx),
-            )
+                _text_search_request(session, ssl_ctx, biased=True),
+            ]
+            if run_global_lane:
+                lanes.append(_text_search_request(session, ssl_ctx, biased=False))
+
+            lane_results = await asyncio.gather(*lanes)
+            results_a, results_b, text_results = lane_results[0], lane_results[1], lane_results[2]
+            if run_global_lane:
+                text_results = text_results + [
+                    p for p in lane_results[3]
+                    if p.get("id") not in {q.get("id") for q in text_results}
+                ]
 
             # Merge and deduplicate autocomplete suggestions (typed results first)
             seen_ids = set()
@@ -545,11 +635,9 @@ async def places_autocomplete(
                     from_cache=False,
                 ))
 
-            # Sort by distance (closest first) if distances are available
-            merged_predictions.sort(key=lambda p: p.distance_meters if p.distance_meters is not None else float('inf'))
-
-            # Limit to 10 results
-            final_predictions = merged_predictions[:10]
+            # Rank: text-match quality first, then distance — with reserved
+            # slots for strong far-away matches so they survive truncation
+            final_predictions = _blend_rank(merged_predictions, query)
 
             # 5. Index all Google results to global cache (fire-and-forget)
             all_google_predictions = google_predictions + [
@@ -566,7 +654,9 @@ async def places_autocomplete(
     except aiohttp.ClientError as e:
         # If network fails but we have cache results, return those
         if cached_results:
-            predictions = [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results]
+            predictions = _blend_rank(
+                [PlacePrediction(**{**p, "from_cache": True}) for p in cached_results], query
+            )
             return AutocompleteResponse(predictions=predictions, from_cache=True)
         raise HTTPException(status_code=502, detail=f"Failed to reach Places API: {str(e)}")
 

@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from api.dependencies import get_current_user
 from core.config import settings
 from db.models import User
-from services.cache import cache_get, cache_set
+from services.cache import cache_get_swr, cache_set_swr, single_flight
 from services.places.autocomplete import (
     GEO_INDEX,
     META_PREFIX,
@@ -86,35 +86,69 @@ async def get_nearby_places(
 
     google_types = CATEGORY_MAP[category]
     grid_lat, grid_lng = _snap(lat, lng)
-    cache_key = f"nearby:{category}:{grid_lat:.4f}:{grid_lng:.4f}"
+    # radius is part of the key: a 500m result set must never serve a 5km ask
+    cache_key = f"nearby:v2:{category}:{radius}:{grid_lat:.4f}:{grid_lng:.4f}"
 
-    # 1. Check result cache
-    cached = await cache_get(cache_key, reset_ttl=False)
+    # 1. Result cache with stale-while-revalidate: fresh -> return; stale ->
+    # return immediately and refresh in the background
+    cached, is_stale = await cache_get_swr(cache_key)
     if cached is not None:
         for p in cached:
             p["source"] = "redis"
+        if is_stale:
+            asyncio.create_task(
+                _refresh_nearby(cache_key, lat, lng, radius, google_types, category)
+            )
         return NearbyResponse(places=cached, category=category, from_cache=True)
 
-    # 2. Try Redis geo-index
-    places = await _search_redis_geo(lat, lng, radius, google_types, category)
+    # 2. Miss: fetch under a single-flight lock so a burst of identical
+    # requests hits Google once
+    lock = await single_flight(cache_key)
+    async with lock:
+        cached, _ = await cache_get_swr(cache_key)
+        if cached is not None:
+            for p in cached:
+                p["source"] = "redis"
+            return NearbyResponse(places=cached, category=category, from_cache=True)
 
-    # 3. Fall back to Google if not enough results
+        places = await _fetch_nearby(lat, lng, radius, google_types, category)
+        await cache_set_swr(
+            cache_key, [p.model_dump() for p in places], ttl=CACHE_TTL, grace=CACHE_TTL
+        )
+
+    return NearbyResponse(places=places, category=category, from_cache=False)
+
+
+async def _fetch_nearby(
+    lat: float, lng: float, radius: int, google_types: list, category: str
+) -> List[NearbyPlace]:
+    # Redis geo-index first, Google fallback when thin
+    places = await _search_redis_geo(lat, lng, radius, google_types, category)
     if len(places) < MIN_REDIS_RESULTS:
         google_places = await _search_google(lat, lng, radius, google_types, category)
-        # Merge: keep Google results, deduplicate
         existing_ids = {p.place_id for p in places}
         for gp in google_places:
             if gp.place_id not in existing_ids:
                 places.append(gp)
-
-    # Sort by distance
     places.sort(key=lambda p: p.distance_meters)
+    return places
 
-    # Cache the results
-    places_dicts = [p.model_dump() for p in places]
-    await cache_set(cache_key, places_dicts, ttl=CACHE_TTL)
 
-    return NearbyResponse(places=places, category=category, from_cache=False)
+async def _refresh_nearby(
+    cache_key: str, lat: float, lng: float, radius: int, google_types: list, category: str
+):
+    """Background refresh for a stale cache entry (single-flighted)."""
+    lock = await single_flight(cache_key)
+    if lock.locked():
+        return
+    async with lock:
+        try:
+            places = await _fetch_nearby(lat, lng, radius, google_types, category)
+            await cache_set_swr(
+                cache_key, [p.model_dump() for p in places], ttl=CACHE_TTL, grace=CACHE_TTL
+            )
+        except Exception as e:
+            logger.warning(f"Nearby SWR refresh failed for {cache_key}: {e}")
 
 
 # --- Redis geo-index search ---

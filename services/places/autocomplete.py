@@ -98,14 +98,15 @@ async def index_place(
         # 2. Add to geo index (GEOADD uses lng, lat order)
         pipe.geoadd(GEO_INDEX, (lng, lat, place_id))
 
-        # 3. Store/update metadata
+        # 3. Store/update metadata. bounce_count is written with HSETNX so a
+        # re-index from autocomplete/nearby (which always passes 0) can never
+        # clobber the accumulated popularity counter.
         meta_key = f"{META_PREFIX}{place_id}"
         metadata = {
             "name": name,
             "address": address or "",
             "lat": str(lat),
             "lng": str(lng),
-            "bounce_count": str(bounce_count),
             "types": json.dumps(types or []),
             "indexed_at": str(int(time.time()))
         }
@@ -113,6 +114,7 @@ async def index_place(
             metadata["photo_url"] = photo_url
 
         pipe.hset(meta_key, mapping=metadata)
+        pipe.hsetnx(meta_key, "bounce_count", str(bounce_count))
         pipe.expire(meta_key, META_TTL)
 
         await pipe.execute()
@@ -233,10 +235,14 @@ async def global_autocomplete_search(
             pipe.hgetall(f"{META_PREFIX}{pid}")
         metadata_results = await pipe.execute()
 
-        # Build results with scores
+        # Build results with scores; collect orphans (index entries whose meta
+        # hash expired) for lazy reaping so the ZSET/GEO sets don't grow forever
         results = []
+        orphaned: list[tuple[str, str]] = []  # (raw_entry, place_id)
         for i, meta in enumerate(metadata_results):
             if not meta:
+                if i < len(raw_entries):
+                    orphaned.append((raw_entries[i], place_ids[i]))
                 continue
 
             place_id = place_ids[i]
@@ -272,6 +278,17 @@ async def global_autocomplete_search(
                 "types": types,
                 "_score": score  # Internal, for sorting
             })
+
+        # Lazily reap orphaned index entries (meta expired 30d ago)
+        if orphaned:
+            try:
+                pipe = redis.pipeline()
+                pipe.zrem(AUTOCOMPLETE_INDEX, *[entry for entry, _ in orphaned])
+                pipe.zrem(GEO_INDEX, *[pid for _, pid in orphaned])
+                await pipe.execute()
+                logger.debug(f"Reaped {len(orphaned)} orphaned index entries")
+            except Exception:
+                pass
 
         # Sort by score (higher = better)
         results.sort(key=lambda x: x["_score"], reverse=True)
