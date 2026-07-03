@@ -35,9 +35,15 @@ class BounceCommentator:
         self._task: Optional[asyncio.Task] = None
         self._stopped = False
         self._send: Optional[Callable] = None
+        self._persist: Optional[Callable] = None
 
-    def start(self, send_callback: Callable[[int, dict], Awaitable]):
+    def start(
+        self,
+        send_callback: Callable[[int, dict], Awaitable],
+        persist_callback: Optional[Callable[[int, str], Awaitable]] = None,
+    ):
         self._send = send_callback
+        self._persist = persist_callback
         self._task = asyncio.create_task(self._process_loop())
 
     async def stop(self):
@@ -102,6 +108,11 @@ class BounceCommentator:
                         "is_ai": True,
                         "timestamp": self.last_ai_time,
                     })
+                    if self._persist:
+                        try:
+                            await self._persist(self.bounce_id, commentary)
+                        except Exception as e:
+                            logger.warning(f"AI chat persist failed for bounce {self.bounce_id}: {e}")
             except Exception as e:
                 logger.error(f"AI commentary error for bounce {self.bounce_id}: {e}")
 
@@ -209,11 +220,12 @@ _commentators: dict[int, BounceCommentator] = {}
 
 
 def get_or_create_commentator(
-    bounce_id: int, context: dict, send_callback: Callable
+    bounce_id: int, context: dict, send_callback: Callable,
+    persist_callback: Optional[Callable] = None,
 ) -> BounceCommentator:
     if bounce_id not in _commentators:
         c = BounceCommentator(bounce_id, context)
-        c.start(send_callback)
+        c.start(send_callback, persist_callback)
         _commentators[bounce_id] = c
     return _commentators[bounce_id]
 

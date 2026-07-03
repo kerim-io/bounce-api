@@ -1,8 +1,10 @@
+import asyncio
 import secrets
 import json
 import logging
 import hashlib
 import time
+from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +13,7 @@ from jose import JWTError
 from typing import Optional
 
 from db.database import get_async_session, create_async_session
-from db.models import Bounce, BounceInvite, BounceLocationShare, BounceGuestLocation, User, Follow
+from db.models import Bounce, BounceInvite, BounceLocationShare, BounceGuestLocation, BounceChatMessage, User, Follow
 from sqlalchemy import func
 from api.dependencies import get_current_user
 from api.routes.websocket import manager
@@ -19,9 +21,57 @@ from api.routes.bounces import get_bounce_participants, get_venue_photo_url
 from core.config import settings
 from services.auth_service import decode_access_token
 from services.ai_commentator import get_or_create_commentator, remove_commentator
+from services.live_room import (
+    ReactionThrottle,
+    register_viewer,
+    unregister_viewer,
+    viewer_refresh_loop,
+)
 
 router = APIRouter(tags=["bounce-share"])
 logger = logging.getLogger(__name__)
+
+
+async def _persist_ai_message(bounce_id: int, text: str):
+    """Persist an AI commentator message (called from the commentator's loop)."""
+    async with create_async_session() as session:
+        session.add(BounceChatMessage(
+            bounce_id=bounce_id,
+            sender_name="Bounce AI",
+            text=text,
+            is_ai=True,
+        ))
+        await session.commit()
+
+
+async def _load_chat_history(db: AsyncSession, bounce_id: int, limit: int = 50) -> list:
+    """Last `limit` chat messages for a bounce, oldest-first, from Postgres."""
+    result = await db.execute(
+        select(BounceChatMessage, User)
+        .outerjoin(User, BounceChatMessage.user_id == User.id)
+        .where(BounceChatMessage.bounce_id == bounce_id)
+        .order_by(BounceChatMessage.id.desc())
+        .limit(limit)
+    )
+    rows = result.all()
+    messages = []
+    for msg, user in reversed(rows):
+        entry = {
+            "sender": msg.sender_name,
+            "text": msg.text,
+            "is_ai": msg.is_ai,
+            "timestamp": msg.created_at.timestamp() if msg.created_at else 0,
+        }
+        if msg.user_id:
+            entry["user_id"] = msg.user_id
+            if user:
+                entry["profile_picture"] = (
+                    user.profile_picture or user.instagram_profile_pic or user.profile_picture_1 or ""
+                )
+        elif msg.guest_id:
+            entry["guest_id"] = msg.guest_id
+        messages.append(entry)
+    return messages
 
 
 async def _is_participant(db: AsyncSession, bounce_id: int, user_id: int) -> bool:
@@ -371,6 +421,12 @@ async def bounce_guest_websocket(
     explicit_leave = False
     is_app_user = False
     app_user_id: Optional[int] = None
+    conn_id = uuid4().hex
+    refresh_task: Optional[asyncio.Task] = None
+    throttle = ReactionThrottle()
+
+    def _viewer_key(bid: int) -> str:
+        return f"bounce:viewers:{bid}"
 
     try:
         # Validate share_token
@@ -461,10 +517,27 @@ async def bounce_guest_websocket(
                     )
                     enqueue_notification(pid, payload_to_dict(payload))
 
+        # Register viewer presence (Redis ZSET, accurate across instances)
+        viewer_count = None
+        try:
+            viewer_count = await register_viewer(_viewer_key(bounce_id), conn_id)
+        except Exception as e:
+            logger.warning(f"Viewer register failed for bounce {bounce_id}: {e}")
+        refresh_task = asyncio.create_task(viewer_refresh_loop(_viewer_key(bounce_id), conn_id))
+
         # Send initial state
         initial_state = await _build_initial_state(db, bounce_id)
+        if viewer_count is not None:
+            initial_state["viewer_count"] = viewer_count
         logger.info(f"Sending initial_state to '{name}': {len(initial_state.get('app_users', []))} app users, {len(initial_state.get('guests', []))} guests")
         await websocket.send_json(initial_state)
+
+        if viewer_count is not None:
+            await manager.send_to_bounce(bounce_id, {
+                "type": "viewer_count",
+                "bounce_id": bounce_id,
+                "count": viewer_count,
+            })
 
         # Fetch creator name for commentator context
         creator_result = await db.execute(
@@ -485,13 +558,18 @@ async def bounce_guest_websocket(
                 "creator_name": creator_name,
             },
             manager.send_to_bounce,
+            persist_callback=_persist_ai_message,
         )
         commentator.attendees[guest_id] = {
             "name": name, "last_lat": 0, "last_lng": 0, "last_seen": time.time()
         }
 
-        # Send chat history to late joiner
-        history = commentator.get_history()
+        # Send chat history (persisted — survives restarts, shared app/web stream)
+        try:
+            history = await _load_chat_history(db, bounce_id)
+        except Exception as e:
+            logger.warning(f"Chat history load failed for bounce {bounce_id}: {e}")
+            history = commentator.get_history()
         if history:
             await websocket.send_json({"type": "chat_history", "messages": history})
 
@@ -602,9 +680,39 @@ async def bounce_guest_websocket(
                 else:
                     chat_msg["guest_id"] = guest_id
 
+                # Persist so app + web share one stream that survives restarts
+                try:
+                    db.add(BounceChatMessage(
+                        bounce_id=bounce_id,
+                        user_id=app_user_id if is_app_user else None,
+                        guest_id=None if is_app_user else guest_id,
+                        sender_name=name,
+                        text=text,
+                    ))
+                    await db.commit()
+                except Exception as e:
+                    logger.warning(f"Chat persist failed for bounce {bounce_id}: {e}")
+                    await db.rollback()
+
                 commentator.add_chat(name, text, is_ai=False)
                 await manager.send_to_bounce(bounce_id, chat_msg)
                 commentator.push_event({"type": "chat", "sender": name, "text": text})
+
+            elif msg_type == "reaction":
+                allowed = throttle.allow(data.get("count", 1))
+                if allowed <= 0:
+                    continue
+                reaction_msg = {
+                    "type": "reaction",
+                    "bounce_id": bounce_id,
+                    "nickname": name,
+                    "count": allowed,
+                }
+                if is_app_user:
+                    reaction_msg["user_id"] = app_user_id
+                else:
+                    reaction_msg["guest_id"] = guest_id
+                await manager.send_to_bounce(bounce_id, reaction_msg)
 
             elif msg_type == "guest_leave" and not is_app_user:
                 explicit_leave = True
@@ -615,7 +723,19 @@ async def bounce_guest_websocket(
     except Exception as e:
         logger.error(f"Guest WS error for bounce: {e}")
     finally:
+        if refresh_task is not None:
+            refresh_task.cancel()
         if bounce_id is not None:
+            try:
+                count = await unregister_viewer(_viewer_key(bounce_id), conn_id)
+                await manager.send_to_bounce(bounce_id, {
+                    "type": "viewer_count",
+                    "bounce_id": bounce_id,
+                    "count": count,
+                })
+            except Exception as e:
+                logger.warning(f"Viewer unregister failed for bounce {bounce_id}: {e}")
+
             # App users don't have guest records — skip guest cleanup
             if not is_app_user:
                 try:

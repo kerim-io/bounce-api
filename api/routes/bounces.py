@@ -139,6 +139,7 @@ class BounceResponse(BaseModel):
     invite_count: int
     attendee_count: int = 0
     attendees: Optional[List[AttendeeInfo]] = None
+    share_token: Optional[str] = None
     created_at: datetime
 
     class Config:
@@ -176,6 +177,7 @@ def build_bounce_response(
         invite_count=invite_count,
         attendee_count=attendee_count,
         attendees=attendees,
+        share_token=bounce.share_token,
         created_at=bounce.created_at,
     )
 
@@ -204,7 +206,9 @@ async def create_bounce(
                 places_fk_id = place.id
                 logger.info(f"Linked bounce to place {place.id} ({place.place_id})")
 
-        # Create the bounce
+        # Create the bounce (share_token minted up front so the app can open
+        # the live room WebSocket immediately after creation)
+        import secrets
         bounce = Bounce(
             creator_id=current_user.id,
             places_fk_id=places_fk_id,
@@ -216,7 +220,8 @@ async def create_bounce(
             bounce_time=bounce_data.bounce_time,
             is_now=bounce_data.is_now,
             is_public=bounce_data.is_public,
-            message=bounce_data.message
+            message=bounce_data.message,
+            share_token=secrets.token_hex(16)
         )
         db.add(bounce)
         await db.flush()  # Get the bounce ID

@@ -90,13 +90,15 @@ async def auto_checkout_if_needed(db: AsyncSession, user_id: int, user_lat: floa
         await cache_delete(f"venue_count:{place_id}")
 
     # Broadcast checkout to all connected clients
-    await manager.broadcast({
+    checkout_event = {
         "type": "venue_checkout",
         "place_id": place_id,
         "venue_name": venue_name,
         "user_id": user_id,
         "timestamp": datetime.now(timezone.utc).isoformat()
-    })
+    }
+    await manager.broadcast(checkout_event)
+    await manager.send_to_venue_feed(place_id, checkout_event)
 
     logger.info(f"Auto-checkout user {user_id} from venue {place_id} (distance: {int(distance)}m)")
     return place_id
@@ -434,7 +436,7 @@ async def checkin_to_venue(
     await cache_delete(f"venue_count:{place_id}")
 
     # Broadcast check-in to all connected clients
-    await manager.broadcast({
+    checkin_event = {
         "type": "venue_checkin",
         "place_id": place_id,
         "venue_name": place.name,
@@ -443,7 +445,14 @@ async def checkin_to_venue(
         "user_id": current_user.id,
         "nickname": current_user.nickname,
         "timestamp": datetime.now(timezone.utc).isoformat()
-    })
+    }
+    await manager.broadcast(checkin_event)
+
+    # Also into the venue's live feed room ("X joined" row)
+    profile_pic = current_user.profile_picture or current_user.instagram_profile_pic
+    if profile_pic and profile_pic.startswith("data:"):
+        profile_pic = None
+    await manager.send_to_venue_feed(place_id, {**checkin_event, "profile_picture": profile_pic})
 
     # Send notifications to users at the same venue who follow the current user
     expiry_time = datetime.now(timezone.utc) - timedelta(hours=CHECKIN_EXPIRY_HOURS)
@@ -709,14 +718,16 @@ async def checkout_from_venue(
         logger.info(f"Sent friend_left_venue notification for user {user.id}")
 
     # Broadcast checkout to all connected clients
-    await manager.broadcast({
+    checkout_event = {
         "type": "venue_checkout",
         "place_id": place_id,
         "venue_name": venue_name,
         "user_id": current_user.id,
         "nickname": current_user.nickname,
         "timestamp": datetime.now(timezone.utc).isoformat()
-    })
+    }
+    await manager.broadcast(checkout_event)
+    await manager.send_to_venue_feed(place_id, checkout_event)
 
     return {"message": "Successfully checked out"}
 

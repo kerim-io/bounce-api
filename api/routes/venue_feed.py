@@ -4,12 +4,14 @@ from sqlalchemy import select, and_, desc
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
+from uuid import uuid4
+import asyncio
 import base64
 import json
 import logging
 import httpx
 
-from db.database import get_async_session
+from db.database import get_async_session, create_async_session
 from db.models import VenueFeedMessage, CheckIn, User, Place
 from api.dependencies import get_current_user
 from api.routes.websocket import manager
@@ -131,6 +133,10 @@ async def get_venue_feed(
     rows = rows[:limit]
 
     messages = [_format_message(msg, user) for msg, user in rows]
+
+    # Weak implicit signal for the recommender
+    from services.recommendations import log_place_event
+    log_place_event(current_user.id, place_id, "feed_view")
 
     return FeedResponse(place_id=place_id, messages=messages, has_more=has_more)
 
@@ -330,6 +336,28 @@ async def report_message(
     return {"reported": True, "message_id": message_id}
 
 
+# ---------- Live room: viewer presence + ephemeral reactions ----------
+
+from services.live_room import (
+    ReactionThrottle,
+    register_viewer,
+    unregister_viewer,
+    viewer_refresh_loop,
+)
+
+
+def _viewer_key(place_id: str) -> str:
+    return f"venue:viewers:{place_id}"
+
+
+async def _broadcast_viewer_count(place_id: str, count: int):
+    await manager.send_to_venue_feed(place_id, {
+        "type": "viewer_count",
+        "place_id": place_id,
+        "count": count,
+    })
+
+
 # ---------- WebSocket endpoint ----------
 
 @router.websocket("/ws/{place_id}")
@@ -338,30 +366,89 @@ async def venue_feed_websocket(
     place_id: str,
     token: str = Query(...),
 ):
-    """Subscribe to real-time venue feed updates. Read-only — posting is via REST."""
+    """Real-time venue feed socket.
+
+    Server -> client: venue_feed_message, venue_feed_remove, venue_checkin,
+    venue_checkout, reaction, viewer_count.
+    Client -> server: "ping" keepalive, or {"type": "reaction", "count": n}
+    (ephemeral hearts — rate-limited, broadcast to the room, never stored).
+    Posting messages stays REST.
+    """
     from services.auth_service import decode_access_token
     from jose import JWTError
 
     try:
         payload = decode_access_token(token)
-        int(payload.get("sub"))  # validate user_id present
+        user_id = int(payload.get("sub"))
     except (JWTError, ValueError, TypeError) as e:
         logger.warning(f"Venue feed WS auth failed: {e}")
         await websocket.close(code=4001, reason="Invalid token")
         return
 
+    # Resolve nickname once for reaction attribution
+    nickname = None
+    try:
+        async with create_async_session() as session:
+            result = await session.execute(select(User).where(User.id == user_id))
+            user = result.scalar_one_or_none()
+            if user:
+                nickname = user.nickname
+    except Exception as e:
+        logger.warning(f"Venue feed WS could not load user {user_id}: {e}")
+
     await manager.connect_venue_feed(websocket, place_id)
-    logger.debug(f"Venue feed WS connected: place_id={place_id}")
+    logger.debug(f"Venue feed WS connected: place_id={place_id} user={user_id}")
+
+    conn_id = uuid4().hex
+    viewer_count = None
+    try:
+        viewer_count = await register_viewer(_viewer_key(place_id), conn_id)
+    except Exception as e:
+        logger.warning(f"Viewer register failed for {place_id}: {e}")
+
+    refresh_task = asyncio.create_task(viewer_refresh_loop(_viewer_key(place_id), conn_id))
+    throttle = ReactionThrottle()
 
     try:
-        await websocket.send_json({"type": "connected", "place_id": place_id})
+        await websocket.send_json({
+            "type": "connected",
+            "place_id": place_id,
+            "viewer_count": viewer_count,
+        })
+        if viewer_count is not None:
+            await _broadcast_viewer_count(place_id, viewer_count)
+
         while True:
             data = await websocket.receive_text()
             if data == "ping":
                 await websocket.send_text("pong")
+                continue
+
+            try:
+                frame = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+
+            if frame.get("type") == "reaction":
+                allowed = throttle.allow(frame.get("count", 1))
+                if allowed <= 0:
+                    continue
+                await manager.send_to_venue_feed(place_id, {
+                    "type": "reaction",
+                    "place_id": place_id,
+                    "user_id": user_id,
+                    "nickname": nickname,
+                    "count": allowed,
+                })
     except WebSocketDisconnect:
         logger.debug(f"Venue feed WS disconnected: place_id={place_id}")
     except Exception as e:
         logger.error(f"Venue feed WS error for place_id={place_id}: {e}")
     finally:
+        refresh_task.cancel()
         manager.disconnect_venue_feed(websocket, place_id)
+        try:
+            count = await unregister_viewer(_viewer_key(place_id), conn_id)
+            await _broadcast_viewer_count(place_id, count)
+        except Exception as e:
+            logger.warning(f"Viewer unregister failed for {place_id}: {e}")
