@@ -921,7 +921,7 @@ async def update_location(
     # Update user location
     current_user.last_location_lat = location.latitude
     current_user.last_location_lon = location.longitude
-    current_user.last_location_update = datetime.utcnow()
+    current_user.last_location_update = datetime.now(timezone.utc)
 
     # Check if within geofence
     can_post = distance_km <= basel_radius_km

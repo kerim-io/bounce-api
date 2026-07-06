@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from db.database import get_async_session, get_session_maker
 from db.models import User, Follow, CheckIn
@@ -40,13 +40,33 @@ async def stop_silent_push_loop():
         logger.info("Stopped silent push loop")
 
 
+# APNs budgets content-available pushes to roughly a few per hour per device when the
+# app isn't in use — a 30s cadence just gets throttled while burning APNs traffic and
+# device battery. A few minutes is the fastest cadence that reliably delivers.
+SILENT_PUSH_INTERVAL_SECONDS = 180
+
+
 async def _silent_push_loop():
-    """Send silent push every 30 seconds to users who are sharing location with close friends"""
+    """Periodically send silent pushes to users who are sharing location with close friends"""
     from services.apns_service import get_apns_service
+    from services.redis import get_redis
 
     while True:
         try:
-            await asyncio.sleep(30)
+            await asyncio.sleep(SILENT_PUSH_INTERVAL_SECONDS)
+
+            # Cross-worker lock: with multiple workers/instances, only one may send per tick,
+            # otherwise every process duplicates every push
+            try:
+                r = await get_redis()
+                acquired = await r.set(
+                    "locks:silent_push_tick", "1",
+                    nx=True, ex=SILENT_PUSH_INTERVAL_SECONDS - 15
+                )
+                if not acquired:
+                    continue
+            except Exception as e:
+                logger.warning(f"Silent push lock unavailable, proceeding without it: {e}")
 
             session_maker = get_session_maker()
             async with session_maker() as db:
@@ -328,11 +348,14 @@ async def decline_close_friend(
     reverse_follow = reverse_result.scalar_one_or_none()
 
     # Reset status to none on both follow records
+    # Also clear location sharing so it can't silently resume if they become close friends again
     follow.close_friend_status = 'none'
     follow.close_friend_requester_id = None
+    follow.is_sharing_location = False
     if reverse_follow:
         reverse_follow.close_friend_status = 'none'
         reverse_follow.close_friend_requester_id = None
+        reverse_follow.is_sharing_location = False
 
     await db.commit()
 
@@ -387,13 +410,16 @@ async def remove_close_friend(
     reverse_follow = reverse_result.scalar_one_or_none()
 
     # Reset status to none on both follow records
+    # Also clear location sharing so it can't silently resume if they become close friends again
     follow.close_friend_status = 'none'
     follow.close_friend_requester_id = None
     follow.is_close_friend = False
+    follow.is_sharing_location = False
     if reverse_follow:
         reverse_follow.close_friend_status = 'none'
         reverse_follow.close_friend_requester_id = None
         reverse_follow.is_close_friend = False
+        reverse_follow.is_sharing_location = False
 
     await db.commit()
 
@@ -460,12 +486,12 @@ async def toggle_location_sharing(
     if user_id == current_user.id:
         raise HTTPException(status_code=400, detail="Cannot share location with yourself")
 
-    # Check if current user follows target user
+    # Check if current user follows target user (locked so concurrent toggles can't race)
     result = await db.execute(
         select(Follow).where(
             Follow.follower_id == current_user.id,
             Follow.following_id == user_id
-        )
+        ).with_for_update()
     )
     follow = result.scalar_one_or_none()
 
@@ -627,6 +653,10 @@ async def get_close_friend_locations(
     """
     logger.info(f"get_close_friend_locations called for user {current_user.id}")
 
+    # Hide locations that haven't updated in over a day — the sharer's app is clearly
+    # not running, and a week-old pin presented on a live map is misleading
+    staleness_cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+
     # Find close friends who are sharing their location with us
     # This means: they follow us AND have is_sharing_location = True
     result = await db.execute(
@@ -637,7 +667,9 @@ async def get_close_friend_locations(
             Follow.close_friend_status == 'accepted',
             Follow.is_sharing_location == True,
             User.last_location_lat.isnot(None),
-            User.last_location_lon.isnot(None)
+            User.last_location_lon.isnot(None),
+            User.last_location_update.isnot(None),
+            User.last_location_update >= staleness_cutoff
         )
     )
     rows = result.all()

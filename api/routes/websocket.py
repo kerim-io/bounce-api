@@ -279,13 +279,24 @@ manager = ConnectionManager()
 @router.websocket("/ws/notifications")
 async def notifications_websocket(
     websocket: WebSocket,
-    token: str = Query(...)
+    token: str | None = Query(None)
 ):
     """
     WebSocket endpoint for real-time in-app notifications.
+
+    Auth: prefer the Authorization header (tokens in query strings end up in
+    access logs); the ?token= query param is kept for older clients.
     """
     from services.auth_service import decode_access_token
     from jose import JWTError
+
+    auth_header = websocket.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header[7:]
+
+    if not token:
+        await websocket.close(code=4001, reason="Missing token")
+        return
 
     # Validate token and get user_id (ensures it's an access token, not refresh)
     try:

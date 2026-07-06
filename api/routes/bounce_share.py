@@ -4,11 +4,12 @@ import json
 import logging
 import hashlib
 import time
+from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from jose import JWTError
 from typing import Optional
 
@@ -595,7 +596,13 @@ async def bounce_guest_websocket(
             if msg_type == "guest_location" and not is_app_user:
                 lat = data.get("latitude")
                 lng = data.get("longitude")
-                if lat is None or lng is None:
+                # Client-supplied JSON: reject non-numeric (incl. bool/NaN/inf via the
+                # range check) before it reaches the DB or other clients' maps
+                if not isinstance(lat, (int, float)) or isinstance(lat, bool):
+                    continue
+                if not isinstance(lng, (int, float)) or isinstance(lng, bool):
+                    continue
+                if not (-90 <= lat <= 90 and -180 <= lng <= 180):
                     continue
 
                 # Upsert guest location
@@ -801,6 +808,10 @@ async def bounce_guest_websocket(
 
 async def _build_initial_state(db: AsyncSession, bounce_id: int) -> dict:
     """Build the initial_state message with all current locations."""
+    # Hide shares that stopped updating (app force-killed mid-share) — same cutoff
+    # as GET /bounces/{id}/locations
+    staleness_cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
+
     # App user locations
     result = await db.execute(
         select(BounceLocationShare, User)
@@ -808,7 +819,9 @@ async def _build_initial_state(db: AsyncSession, bounce_id: int) -> dict:
         .where(
             BounceLocationShare.bounce_id == bounce_id,
             BounceLocationShare.is_sharing == True,
-            BounceLocationShare.latitude != 0
+            # Exclude the (0,0) placeholder of users who haven't sent a location yet
+            or_(BounceLocationShare.latitude != 0, BounceLocationShare.longitude != 0),
+            BounceLocationShare.updated_at >= staleness_cutoff
         )
     )
     app_users = []
@@ -825,7 +838,8 @@ async def _build_initial_state(db: AsyncSession, bounce_id: int) -> dict:
     result = await db.execute(
         select(BounceGuestLocation).where(
             BounceGuestLocation.bounce_id == bounce_id,
-            BounceGuestLocation.is_sharing == True
+            BounceGuestLocation.is_sharing == True,
+            BounceGuestLocation.updated_at >= staleness_cutoff
         )
     )
     guests = []

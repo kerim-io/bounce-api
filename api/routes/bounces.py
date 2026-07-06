@@ -1601,12 +1601,16 @@ async def toggle_location_sharing(
     if not await is_bounce_participant(db, bounce_id, current_user.id):
         raise HTTPException(status_code=403, detail="Not a participant of this bounce")
 
-    # Check bounce exists and is active
     result = await db.execute(
-        select(Bounce).where(Bounce.id == bounce_id, Bounce.status == 'active')
+        select(Bounce).where(Bounce.id == bounce_id)
     )
     bounce = result.scalar_one_or_none()
     if not bounce:
+        raise HTTPException(status_code=404, detail="Bounce not found")
+
+    # Only starting to share requires an active bounce — stopping must always be
+    # possible, otherwise a share on an ended bounce can never be turned off
+    if toggle.is_sharing and bounce.status != 'active':
         raise HTTPException(status_code=404, detail="Bounce not found or not active")
 
     if toggle.is_sharing:
@@ -1731,6 +1735,10 @@ async def get_shared_locations(
     if not await is_bounce_participant(db, bounce_id, current_user.id):
         raise HTTPException(status_code=403, detail="Not a participant of this bounce")
 
+    # Shares whose app stopped broadcasting (force-killed mid-share) would otherwise
+    # stay pinned at their last position forever
+    staleness_cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
+
     # Get all active location shares with user info
     result = await db.execute(
         select(BounceLocationShare, User)
@@ -1738,7 +1746,9 @@ async def get_shared_locations(
         .where(
             BounceLocationShare.bounce_id == bounce_id,
             BounceLocationShare.is_sharing == True,
-            BounceLocationShare.latitude != 0  # Exclude users who haven't sent location yet
+            # Exclude the (0,0) placeholder of users who haven't sent a location yet
+            or_(BounceLocationShare.latitude != 0, BounceLocationShare.longitude != 0),
+            BounceLocationShare.updated_at >= staleness_cutoff
         )
     )
     rows = result.all()
@@ -1769,7 +1779,8 @@ async def get_shared_locations(
             display_name=g.display_name,
             latitude=g.latitude,
             longitude=g.longitude,
-            is_sharing=g.is_sharing,
+            # Keep the guest in the presence list, but drop their pin once stale
+            is_sharing=g.is_sharing and g.updated_at is not None and g.updated_at >= staleness_cutoff,
             updated_at=g.updated_at
         )
         for g in guest_rows
