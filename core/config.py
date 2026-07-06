@@ -31,6 +31,13 @@ class Settings:
     BASEL_LON: float = float(os.getenv("BASEL_LON", "-80.1300"))
     BASEL_RADIUS_KM: float = float(os.getenv("BASEL_RADIUS_KM", "5"))
 
+    # Launch cities for posting geofence: "name:lat,lon,radius_km;name:lat,lon,radius_km"
+    # The legacy BASEL_* center above is always included as an additional city.
+    LAUNCH_CITIES: str = os.getenv(
+        "LAUNCH_CITIES",
+        "alsancak:38.4382,27.1432,10;marylebone:51.5187,-0.1549,10"
+    )
+
     # Activity Clustering (for map hotspots)
     ACTIVITY_CLUSTER_RADIUS_M: float = float(os.getenv("ACTIVITY_CLUSTER_RADIUS_M", "100"))  # meters
     ACTIVITY_TIME_WINDOW_MIN: int = int(os.getenv("ACTIVITY_TIME_WINDOW_MIN", "60"))  # minutes

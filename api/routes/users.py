@@ -900,31 +900,21 @@ async def update_location(
     db: AsyncSession = Depends(get_async_session)
 ):
     """
-    Update user location and check if they're at Art Basel Miami.
-
-    Users within the geofence can post and like.
-    Returns can_post status based on distance from Basel coordinates.
+    Update user location and check if they're inside any launch-city geofence
+    (LAUNCH_CITIES config + legacy BASEL_* center). Users within a geofence can
+    post and like. Returns can_post based on distance to the nearest city.
     """
-    # Art Basel Miami coordinates (from .env)
-    basel_lat = settings.BASEL_LAT
-    basel_lon = settings.BASEL_LON
-    basel_radius_km = settings.BASEL_RADIUS_KM
+    from services.geofence import nearest_launch_city
 
-    # Calculate distance from Art Basel venue
-    distance_km = haversine_distance(
-        location.latitude,
-        location.longitude,
-        basel_lat,
-        basel_lon
-    )
+    city, distance_km = nearest_launch_city(location.latitude, location.longitude)
 
     # Update user location
     current_user.last_location_lat = location.latitude
     current_user.last_location_lon = location.longitude
     current_user.last_location_update = datetime.now(timezone.utc)
 
-    # Check if within geofence
-    can_post = distance_km <= basel_radius_km
+    # Check if within the nearest city's geofence
+    can_post = distance_km <= city["radius_km"]
     current_user.can_post = can_post
 
     await db.commit()
@@ -932,16 +922,17 @@ async def update_location(
     # Auto-checkout from venue if user has moved far enough away
     await auto_checkout_if_needed(db, current_user.id, location.latitude, location.longitude)
 
+    city_label = city["name"].title()
     if can_post:
         return LocationResponse(
             can_post=True,
-            message=f"Welcome to Art Basel Miami! You can now post and like.",
+            message=f"Welcome to {city_label}! You can now post and like.",
             distance_km=round(distance_km, 2)
         )
     else:
         return LocationResponse(
             can_post=False,
-            message=f"You're {round(distance_km, 2)} km from Art Basel Miami. Get closer to post and like!",
+            message=f"You're {round(distance_km, 2)} km from {city_label}. Get closer to post and like!",
             distance_km=round(distance_km, 2)
         )
 

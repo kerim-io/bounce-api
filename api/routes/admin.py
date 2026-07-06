@@ -645,3 +645,157 @@ async def admin_users_map(
             "google_maps_api_key": settings.GOOGLE_MAPS_API_KEY,
         }
     )
+
+
+# ============================================================================
+# FEATURED PLACES (hand-picked launch venues with spinning map pins)
+# ============================================================================
+
+async def _google_text_search(query: str) -> list:
+    """Search Google Places by free text so venues can be featured before any
+    user has ever bounced/checked in there."""
+    import ssl
+    import aiohttp
+    import certifi
+
+    if not settings.GOOGLE_MAPS_API_KEY or not query:
+        return []
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": settings.GOOGLE_MAPS_API_KEY,
+        "X-Goog-FieldMask": (
+            "places.id,places.displayName,places.formattedAddress,places.location"
+        ),
+    }
+    body = {"textQuery": query, "maxResultCount": 10}
+
+    try:
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://places.googleapis.com/v1/places:searchText",
+                headers=headers, json=body, ssl=ssl_ctx
+            ) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+    except Exception:
+        return []
+
+    results = []
+    for place in data.get("places", []):
+        location = place.get("location", {})
+        lat, lng = location.get("latitude"), location.get("longitude")
+        if not place.get("id") or lat is None or lng is None:
+            continue
+        results.append({
+            "place_id": place["id"],
+            "name": place.get("displayName", {}).get("text", ""),
+            "address": place.get("formattedAddress", ""),
+            "latitude": lat,
+            "longitude": lng,
+        })
+    return results
+
+
+@router.get("/featured", response_class=HTMLResponse)
+async def admin_featured_list(
+    request: Request,
+    q: str = "",
+    db: AsyncSession = Depends(get_async_session),
+    admin: User = Depends(get_admin_user)
+):
+    """Manage featured places: current list + Google search to add new ones."""
+    from db.models import FeaturedPlace
+
+    result = await db.execute(
+        select(FeaturedPlace, Place)
+        .join(Place, FeaturedPlace.place_fk_id == Place.id)
+        .order_by(FeaturedPlace.city, FeaturedPlace.rank, FeaturedPlace.id)
+    )
+    featured = result.all()
+
+    search_results = await _google_text_search(q) if q else []
+    already_featured_ids = {place.place_id for _, place in featured}
+
+    return templates.TemplateResponse(
+        "admin/featured/list.html",
+        {
+            "request": request,
+            "admin": admin,
+            "featured": featured,
+            "q": q,
+            "search_results": search_results,
+            "already_featured_ids": already_featured_ids,
+        }
+    )
+
+
+@router.post("/featured/add")
+async def admin_featured_add(
+    place_id: str = Form(...),
+    name: str = Form(...),
+    address: str = Form(""),
+    latitude: float = Form(...),
+    longitude: float = Form(...),
+    city: str = Form(...),
+    rank: int = Form(0),
+    db: AsyncSession = Depends(get_async_session),
+    admin: User = Depends(get_admin_user)
+):
+    """Feature a place — creates the Place record (with photos) if it's new."""
+    from db.models import FeaturedPlace
+    from services.places import get_place_with_photos
+
+    place = await get_place_with_photos(
+        db, place_id, name, address or None, latitude, longitude, source="checkin"
+    )
+    if not place:
+        return RedirectResponse(url="/admin/featured", status_code=303)
+
+    existing = await db.execute(
+        select(FeaturedPlace).where(FeaturedPlace.place_fk_id == place.id)
+    )
+    if not existing.scalar_one_or_none():
+        db.add(FeaturedPlace(
+            place_fk_id=place.id,
+            city=city.strip().lower(),
+            rank=rank,
+            is_active=True,
+        ))
+    await db.commit()
+
+    return RedirectResponse(url="/admin/featured", status_code=303)
+
+
+@router.post("/featured/{featured_id}/toggle")
+async def admin_featured_toggle(
+    featured_id: int,
+    db: AsyncSession = Depends(get_async_session),
+    admin: User = Depends(get_admin_user)
+):
+    from db.models import FeaturedPlace
+
+    result = await db.execute(select(FeaturedPlace).where(FeaturedPlace.id == featured_id))
+    fp = result.scalar_one_or_none()
+    if fp:
+        fp.is_active = not fp.is_active
+        await db.commit()
+    return RedirectResponse(url="/admin/featured", status_code=303)
+
+
+@router.post("/featured/{featured_id}/delete")
+async def admin_featured_delete(
+    featured_id: int,
+    db: AsyncSession = Depends(get_async_session),
+    admin: User = Depends(get_admin_user)
+):
+    from db.models import FeaturedPlace
+
+    result = await db.execute(select(FeaturedPlace).where(FeaturedPlace.id == featured_id))
+    fp = result.scalar_one_or_none()
+    if fp:
+        await db.delete(fp)
+        await db.commit()
+    return RedirectResponse(url="/admin/featured", status_code=303)

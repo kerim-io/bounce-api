@@ -20,6 +20,7 @@ from api.routes import (
     bounces,
     checkins,
     close_friends,
+    featured,
     geocoding,
     images,
     matching,
@@ -140,6 +141,7 @@ app.include_router(admin.router)
 app.include_router(bounce_share.router)
 app.include_router(venue_feed.router)
 app.include_router(nearby.router)
+app.include_router(featured.router)
 app.include_router(suggestions.router)
 app.include_router(images.router)
 app.include_router(matching.router)

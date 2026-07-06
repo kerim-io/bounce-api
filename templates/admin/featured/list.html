@@ -1,0 +1,114 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Featured Places{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Featured Places</h1>
+    <span class="badge">{{ featured|length }} featured</span>
+</div>
+
+<p style="color: #888; margin-bottom: 16px;">
+    Featured venues show a spinning pin on the map the moment the app opens in their city.
+    Search Google Places below to feature a venue — it doesn't need any prior activity in the app.
+</p>
+
+<div class="filters">
+    <form method="get" action="/admin/featured" class="search-form">
+        <input type="text" name="q" placeholder="Search Google Places, e.g. 'Purl Marylebone' or 'Kovan Alsancak'" value="{{ q }}" style="min-width: 340px;">
+        <button type="submit" class="btn">Search</button>
+        {% if q %}
+        <a href="/admin/featured" class="btn btn-secondary">Clear</a>
+        {% endif %}
+    </form>
+</div>
+
+{% if q %}
+<h2 style="margin: 20px 0 10px;">Search results for "{{ q }}"</h2>
+{% if search_results %}
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Address</th>
+            <th>Feature as</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for r in search_results %}
+        <tr>
+            <td>{{ r.name }}</td>
+            <td>{{ r.address }}</td>
+            {% if r.place_id in already_featured_ids %}
+            <td><span class="badge badge-success">Already featured</span></td>
+            {% else %}
+            <td>
+                <form method="post" action="/admin/featured/add" style="display: flex; gap: 6px; align-items: center;">
+                    <input type="hidden" name="place_id" value="{{ r.place_id }}">
+                    <input type="hidden" name="name" value="{{ r.name }}">
+                    <input type="hidden" name="address" value="{{ r.address }}">
+                    <input type="hidden" name="latitude" value="{{ r.latitude }}">
+                    <input type="hidden" name="longitude" value="{{ r.longitude }}">
+                    <select name="city">
+                        <option value="alsancak">Alsancak</option>
+                        <option value="marylebone">Marylebone</option>
+                        <option value="other">Other</option>
+                    </select>
+                    <input type="number" name="rank" value="0" style="width: 60px;" title="Rank (lower = more prominent)">
+                    <button type="submit" class="btn btn-sm">Feature</button>
+                </form>
+            </td>
+            {% endif %}
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p style="color: #888;">No results.</p>
+{% endif %}
+{% endif %}
+
+<h2 style="margin: 24px 0 10px;">Currently featured</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>City</th>
+            <th>Rank</th>
+            <th>Name</th>
+            <th>Address</th>
+            <th>Status</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for fp, place in featured %}
+        <tr>
+            <td>{{ fp.city }}</td>
+            <td>{{ fp.rank }}</td>
+            <td>{{ place.name }}</td>
+            <td>{{ place.address or '-' }}</td>
+            <td>
+                {% if fp.is_active %}
+                <span class="badge badge-success">Active</span>
+                {% else %}
+                <span class="badge badge-warning">Paused</span>
+                {% endif %}
+            </td>
+            <td>
+                <form method="post" action="/admin/featured/{{ fp.id }}/toggle" style="display: inline;">
+                    <button type="submit" class="btn btn-sm btn-secondary">
+                        {{ 'Pause' if fp.is_active else 'Activate' }}
+                    </button>
+                </form>
+                <form method="post" action="/admin/featured/{{ fp.id }}/delete" style="display: inline;"
+                      onsubmit="return confirm('Remove {{ place.name }} from featured?');">
+                    <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+                </form>
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" style="color: #888;">Nothing featured yet — search above to add launch venues.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

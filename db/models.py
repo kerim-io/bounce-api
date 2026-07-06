@@ -452,3 +452,21 @@ class VenueFeedMessage(Base):
 
     user = relationship("User")
     place = relationship("Place", back_populates="feed_messages")
+
+
+class FeaturedPlace(Base):
+    """
+    Hand-picked venues promoted per launch city.
+    Their pins render with a spinning highlight as soon as the app opens in that city.
+    Managed from the admin panel (/admin/featured).
+    """
+    __tablename__ = "featured_places"
+
+    id = Column(Integer, primary_key=True, index=True)
+    place_fk_id = Column(Integer, ForeignKey("places.id", ondelete="CASCADE"), nullable=False, unique=True)
+    city = Column(String(100), nullable=False, index=True)   # e.g. "alsancak", "marylebone"
+    rank = Column(Integer, default=0, nullable=False)        # lower = more prominent
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    place = relationship("Place")
