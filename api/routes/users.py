@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from math import radians, cos, sin, asin, sqrt
 
 from db.database import get_async_session
-from db.models import User, Follow, RefreshToken, DeviceToken, NotificationPreference, CheckIn
+from db.models import User, Follow, FollowRequest, RefreshToken, DeviceToken, NotificationPreference, CheckIn
 from api.dependencies import get_current_user, limiter
 from core.config import settings
 from api.routes.websocket import manager as ws_manager
@@ -94,6 +94,9 @@ class ProfileResponse(BaseModel):
     is_followed_by_current_user: Optional[bool] = None
     is_close_friend: Optional[bool] = None
     is_mutual: Optional[bool] = None
+    # Privacy
+    is_private: bool = False
+    follow_request_pending: Optional[bool] = None  # Current user has a pending request to this profile
 
     class Config:
         from_attributes = True
@@ -241,7 +244,8 @@ async def get_profile(
         instagram_profile_pic=current_user.instagram_profile_pic,
         linkedin_handle=current_user.linkedin_handle,
         followers_count=followers_count,
-        following_count=following_count
+        following_count=following_count,
+        is_private=current_user.is_private
     )
 
 
@@ -585,9 +589,14 @@ async def follow_user(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session)
 ):
-    """Follow a user"""
+    """Follow a user. Private profiles get a follow request instead of an instant follow."""
     if user_id == current_user.id:
         raise HTTPException(status_code=400, detail="Cannot follow yourself")
+
+    target_result = await db.execute(select(User).where(User.id == user_id))
+    target = target_result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
 
     # Check if already following
     result = await db.execute(
@@ -600,6 +609,36 @@ async def follow_user(
 
     if existing:
         raise HTTPException(status_code=400, detail="Already following")
+
+    # Private profile: create a follow request instead
+    if target.is_private:
+        request_result = await db.execute(
+            select(FollowRequest).where(
+                FollowRequest.requester_id == current_user.id,
+                FollowRequest.target_id == user_id
+            )
+        )
+        if not request_result.scalar_one_or_none():
+            db.add(FollowRequest(requester_id=current_user.id, target_id=user_id))
+            await db.commit()
+
+            from services.apns_service import NotificationPayload, NotificationType
+            from services.tasks import send_websocket_notification
+
+            actor_name = current_user.nickname or current_user.first_name or "Someone"
+            payload = NotificationPayload(
+                notification_type=NotificationType.FOLLOW_REQUEST,
+                title=actor_name,
+                body="requested to follow you",
+                actor_id=current_user.id,
+                actor_nickname=actor_name,
+                actor_profile_picture=current_user.profile_picture or current_user.instagram_profile_pic
+            )
+            payload_dict = payload_to_dict(payload)
+            await send_websocket_notification(user_id, payload_dict)
+            enqueue_notification(user_id, payload_dict)
+
+        return {"status": "requested", "is_mutual": False}
 
     # Check if this is a follow-back (target user already follows current user)
     reverse_follow_result = await db.execute(
@@ -662,7 +701,7 @@ async def unfollow_user(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session)
 ):
-    """Unfollow a user"""
+    """Unfollow a user (also cancels a pending follow request to a private profile)"""
     result = await db.execute(
         select(Follow).where(
             Follow.follower_id == current_user.id,
@@ -672,6 +711,18 @@ async def unfollow_user(
     follow = result.scalar_one_or_none()
 
     if not follow:
+        # No follow — maybe a pending request to cancel
+        request_result = await db.execute(
+            select(FollowRequest).where(
+                FollowRequest.requester_id == current_user.id,
+                FollowRequest.target_id == user_id
+            )
+        )
+        pending = request_result.scalar_one_or_none()
+        if pending:
+            await db.delete(pending)
+            await db.commit()
+            return {"status": "request_cancelled"}
         raise HTTPException(status_code=404, detail="Not following this user")
 
     await db.delete(follow)
@@ -680,6 +731,143 @@ async def unfollow_user(
     # Invalidate cache for both users' stats
     await cache_delete(f"user_stats:{user_id}")
     await cache_delete(f"user_stats:{current_user.id}")
+
+    return {"status": "success"}
+
+
+class PrivacyUpdate(BaseModel):
+    is_private: bool
+
+
+@router.put("/me/privacy")
+async def update_privacy(
+    privacy: PrivacyUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Toggle profile privacy. Going public auto-accepts all pending follow
+    requests (they were only pending because the profile was private).
+    """
+    current_user.is_private = privacy.is_private
+
+    accepted_ids = []
+    if not privacy.is_private:
+        pending_result = await db.execute(
+            select(FollowRequest).where(FollowRequest.target_id == current_user.id)
+        )
+        for req in pending_result.scalars().all():
+            db.add(Follow(follower_id=req.requester_id, following_id=current_user.id))
+            accepted_ids.append(req.requester_id)
+            await db.delete(req)
+
+    await db.commit()
+
+    if accepted_ids:
+        await cache_delete(f"user_stats:{current_user.id}")
+        for requester_id in accepted_ids:
+            await cache_delete(f"user_stats:{requester_id}")
+
+    return {"status": "success", "is_private": privacy.is_private, "auto_accepted": len(accepted_ids)}
+
+
+@router.get("/me/follow-requests")
+async def get_follow_requests(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Pending follow requests to the current user (private profiles)"""
+    result = await db.execute(
+        select(FollowRequest, User)
+        .join(User, FollowRequest.requester_id == User.id)
+        .where(FollowRequest.target_id == current_user.id)
+        .order_by(FollowRequest.created_at.desc())
+    )
+    rows = result.all()
+
+    requests = [
+        {
+            "user_id": user.id,
+            "nickname": user.nickname,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "profile_picture": user.profile_picture or user.instagram_profile_pic,
+            "requested_at": req.created_at.isoformat() if req.created_at else None,
+        }
+        for req, user in rows
+    ]
+    return {"requests": requests, "count": len(requests)}
+
+
+@router.post("/follow-requests/{requester_id}/accept")
+async def accept_follow_request(
+    requester_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Accept a follow request: creates the follow and notifies the requester"""
+    result = await db.execute(
+        select(FollowRequest).where(
+            FollowRequest.requester_id == requester_id,
+            FollowRequest.target_id == current_user.id
+        )
+    )
+    request = result.scalar_one_or_none()
+    if not request:
+        raise HTTPException(status_code=404, detail="No pending request from this user")
+
+    existing = await db.execute(
+        select(Follow).where(
+            Follow.follower_id == requester_id,
+            Follow.following_id == current_user.id
+        )
+    )
+    if not existing.scalar_one_or_none():
+        db.add(Follow(follower_id=requester_id, following_id=current_user.id))
+    await db.delete(request)
+    await db.commit()
+
+    await cache_delete(f"user_stats:{current_user.id}")
+    await cache_delete(f"user_stats:{requester_id}")
+
+    from services.apns_service import NotificationPayload, NotificationType
+    from services.tasks import send_websocket_notification
+
+    actor_name = current_user.nickname or current_user.first_name or "Someone"
+    payload = NotificationPayload(
+        notification_type=NotificationType.FOLLOW_REQUEST_ACCEPTED,
+        title=actor_name,
+        body="accepted your follow request",
+        actor_id=current_user.id,
+        actor_nickname=actor_name,
+        actor_profile_picture=current_user.profile_picture or current_user.instagram_profile_pic
+    )
+    payload_dict = payload_to_dict(payload)
+    await send_websocket_notification(requester_id, payload_dict)
+    enqueue_notification(requester_id, payload_dict)
+
+    return {"status": "success"}
+
+
+@router.post("/follow-requests/{requester_id}/decline")
+async def decline_follow_request(
+    requester_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Decline a follow request (silent — the requester isn't notified)"""
+    result = await db.execute(
+        select(FollowRequest).where(
+            FollowRequest.requester_id == requester_id,
+            FollowRequest.target_id == current_user.id
+        )
+    )
+    request = result.scalar_one_or_none()
+    if not request:
+        raise HTTPException(status_code=404, detail="No pending request from this user")
+
+    await db.delete(request)
+    await db.commit()
 
     return {"status": "success"}
 
@@ -749,6 +937,17 @@ async def get_user_following(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Private profiles hide their network from non-followers
+    if user.is_private and user_id != current_user.id:
+        viewer_follows = await db.execute(
+            select(Follow).where(
+                Follow.follower_id == current_user.id,
+                Follow.following_id == user_id
+            )
+        )
+        if not viewer_follows.scalar_one_or_none():
+            return []
+
     result = await db.execute(
         select(User).join(
             Follow, Follow.following_id == User.id
@@ -780,6 +979,17 @@ async def get_user_followers(
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Private profiles hide their network from non-followers
+    if user.is_private and user_id != current_user.id:
+        viewer_follows = await db.execute(
+            select(Follow).where(
+                Follow.follower_id == current_user.id,
+                Follow.following_id == user_id
+            )
+        )
+        if not viewer_follows.scalar_one_or_none():
+            return []
 
     result = await db.execute(
         select(User).join(
@@ -870,23 +1080,39 @@ async def get_user_profile(
     # Conditional privacy: only show phone/email to geolocated users
     can_see_private = current_user.can_post  # Geolocated at Art Basel Miami
 
+    # Private profile locked for non-followers: expose only identity basics
+    # (name, avatar, counts) so the lock screen can render
+    profile_locked = user.is_private and not is_followed
+
+    follow_request_pending = False
+    if profile_locked:
+        pending_result = await db.execute(
+            select(FollowRequest).where(
+                FollowRequest.requester_id == current_user.id,
+                FollowRequest.target_id == user_id
+            )
+        )
+        follow_request_pending = pending_result.scalar_one_or_none() is not None
+
     return ProfileResponse(
         id=user.id,
         first_name=user.first_name,
         last_name=user.last_name,
         nickname=user.nickname,
-        employer=user.employer,
-        phone=user.phone if (user.phone_visible and can_see_private) else None,
-        email=user.email if (user.email_visible and can_see_private) else None,
+        employer=None if profile_locked else user.employer,
+        phone=user.phone if (user.phone_visible and can_see_private and not profile_locked) else None,
+        email=user.email if (user.email_visible and can_see_private and not profile_locked) else None,
         profile_picture=user.profile_picture or user.instagram_profile_pic,
-        instagram_handle=user.instagram_handle,
+        instagram_handle=None if profile_locked else user.instagram_handle,
         instagram_profile_pic=user.instagram_profile_pic,
         has_profile=user.has_profile,
         followers_count=followers_count,
         following_count=following_count,
         is_followed_by_current_user=is_followed,
         is_close_friend=is_close_friend,
-        is_mutual=is_mutual
+        is_mutual=is_mutual,
+        is_private=user.is_private,
+        follow_request_pending=follow_request_pending
     )
 
 

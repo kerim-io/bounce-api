@@ -61,6 +61,7 @@ async def _send_apns_direct(user_id: int, payload_dict: Dict[str, Any]) -> None:
                 venue_name=payload_dict.get('venue_name'),
                 venue_latitude=payload_dict.get('venue_latitude'),
                 venue_longitude=payload_dict.get('venue_longitude'),
+                conversation_id=payload_dict.get('conversation_id'),
             )
 
             apns = await get_apns_service()
@@ -116,6 +117,7 @@ async def _send_notification_async(user_id: int, payload_dict: Dict[str, Any]) -
                 venue_name=payload_dict.get('venue_name'),
                 venue_latitude=payload_dict.get('venue_latitude'),
                 venue_longitude=payload_dict.get('venue_longitude'),
+                conversation_id=payload_dict.get('conversation_id'),
             )
 
             apns = await get_apns_service()
@@ -145,6 +147,7 @@ def payload_to_dict(payload) -> Dict[str, Any]:
         'venue_name': payload.venue_name,
         'venue_latitude': payload.venue_latitude,
         'venue_longitude': payload.venue_longitude,
+        'conversation_id': getattr(payload, 'conversation_id', None),
     }
 
 

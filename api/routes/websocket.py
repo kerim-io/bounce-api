@@ -317,6 +317,23 @@ async def notifications_websocket(
             data = await websocket.receive_text()
             if data == "ping":
                 await websocket.send_text("pong")
+                continue
+
+            # Client-to-server events (currently just DM typing indicators)
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+
+            if event.get("type") == "typing":
+                to_user_id = event.get("to_user_id")
+                conversation_id = event.get("conversation_id")
+                if isinstance(to_user_id, int) and isinstance(conversation_id, int):
+                    await manager.send_to_user(to_user_id, {
+                        "type": "dm_typing",
+                        "conversation_id": conversation_id,
+                        "from_user_id": user_id,
+                    })
     except WebSocketDisconnect:
         logger.debug(f"WebSocket disconnected: user {user_id}")
     except Exception as e:

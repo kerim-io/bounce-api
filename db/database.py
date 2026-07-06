@@ -57,6 +57,8 @@ async def run_migrations():
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_picture_1 TEXT",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_picture_2 TEXT",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_picture_3 TEXT",
+        # Private profiles
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT FALSE",
         # Places table
         "ALTER TABLE places ADD COLUMN IF NOT EXISTS bounce_count INTEGER DEFAULT 0",
         "ALTER TABLE places ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE",

@@ -42,6 +42,7 @@ class User(Base):
     last_location_lat = Column(Float, nullable=True)
     last_location_lon = Column(Float, nullable=True)
     last_location_update = Column(DateTime(timezone=True), nullable=True)
+    is_private = Column(Boolean, default=False, nullable=False)  # Private profiles require follow approval
 
     # QR Code token for mutual connections
     qr_token = Column(String(64), unique=True, index=True, nullable=True)
@@ -452,6 +453,64 @@ class VenueFeedMessage(Base):
 
     user = relationship("User")
     place = relationship("Place", back_populates="feed_messages")
+
+
+class FollowRequest(Base):
+    """
+    Pending follow request to a private profile. Accepting creates the Follow
+    row and deletes the request; declining just deletes it. Open profiles never
+    create these — follows are instant there.
+    """
+    __tablename__ = "follow_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    requester_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    target_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    requester = relationship("User", foreign_keys=[requester_id])
+    target = relationship("User", foreign_keys=[target_id])
+
+    __table_args__ = (
+        UniqueConstraint('requester_id', 'target_id', name='uq_follow_request_pair'),
+    )
+
+
+class Conversation(Base):
+    """
+    1:1 DM thread. The user pair is normalized (user1_id < user2_id) so each
+    pair has exactly one conversation.
+    """
+    __tablename__ = "conversations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user1_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user2_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_message_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    user1 = relationship("User", foreign_keys=[user1_id])
+    user2 = relationship("User", foreign_keys=[user2_id])
+
+    __table_args__ = (
+        UniqueConstraint('user1_id', 'user2_id', name='uq_conversation_pair'),
+    )
+
+
+class DirectMessage(Base):
+    """A message inside a 1:1 conversation."""
+    __tablename__ = "direct_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    sender_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    text = Column(Text, nullable=False)
+    client_id = Column(String(64), nullable=True)  # Client-generated UUID for optimistic-send dedupe
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    read_at = Column(DateTime(timezone=True), nullable=True)
+
+    conversation = relationship("Conversation")
+    sender = relationship("User")
 
 
 class FeaturedPlace(Base):

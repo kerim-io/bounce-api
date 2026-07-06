@@ -41,6 +41,9 @@ class NotificationType(str, Enum):
     LOCATION_SHARE = "location_share"
     BOUNCE_ACCEPTED = "bounce_accepted"
     GUEST_JOINED = "guest_joined"
+    FOLLOW_REQUEST = "follow_request"
+    FOLLOW_REQUEST_ACCEPTED = "follow_request_accepted"
+    MESSAGE = "message"
 
 
 @dataclass
@@ -59,6 +62,7 @@ class NotificationPayload:
     venue_name: Optional[str] = None
     venue_latitude: Optional[float] = None
     venue_longitude: Optional[float] = None
+    conversation_id: Optional[int] = None  # DM thread — lets a tap open the chat directly
 
 
 class APNsService:
@@ -229,6 +233,10 @@ class APNsService:
                 "latitude": payload.venue_latitude,
                 "longitude": payload.venue_longitude,
             }
+
+        # Add DM thread if present (tap opens the chat)
+        if payload.conversation_id:
+            custom_data["conversation_id"] = payload.conversation_id
 
         return {
             "aps": {
