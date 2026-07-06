@@ -22,6 +22,7 @@ from api.routes import (
     close_friends,
     geocoding,
     images,
+    matching,
     nearby,
     notifications,
     suggestions,
@@ -141,6 +142,7 @@ app.include_router(venue_feed.router)
 app.include_router(nearby.router)
 app.include_router(suggestions.router)
 app.include_router(images.router)
+app.include_router(matching.router)
 # app.include_router(instagram_verify.router)  # Uncomment when ready to use
 
 

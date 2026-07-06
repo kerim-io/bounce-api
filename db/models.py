@@ -365,6 +365,43 @@ class BounceGuestLocation(Base):
     )
 
 
+class UserAgentProfile(Base):
+    """A tiny LLM agent's evolving dossier on a user, built from behavior.
+
+    persona: <=70-word natural-language sketch (also usable as UI copy)
+    traits:  JSON {scene_tags, nocturnality, spontaneity, initiator,
+             exploration, crew} — consumed by the matching prior's
+             trait-compatibility kernel
+    ideas:   JSON {follow_ideas: [{user_id, reason}],
+             venue_ideas: [{place_id, reason}]} — fed into the Bayesian
+             matching model as prior nudges
+    """
+    __tablename__ = "user_agent_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    persona = Column(Text, nullable=True)
+    traits = Column(Text, nullable=True)          # JSON
+    ideas = Column(Text, nullable=True)           # JSON
+    events_count = Column(Integer, default=0, nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User")
+
+
+class VenueAgentProfile(Base):
+    """Venue-side agent memory: a short crowd/vibe summary derived from the
+    trait vectors of its recent visitors. Used as reason copy for
+    where-to-go-now suggestions."""
+    __tablename__ = "venue_agent_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    place_id = Column(String(255), nullable=False, unique=True, index=True)
+    vibe = Column(Text, nullable=True)
+    crowd_traits = Column(Text, nullable=True)    # JSON
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class UserPlaceEvent(Base):
     """Weak implicit signals (place views, searches) feeding the recommender.
 
