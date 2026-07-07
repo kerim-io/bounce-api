@@ -93,6 +93,10 @@ ALL_TIME_FLOOR = 0.08       # "ever" check-ins never fully vanish
 CANDIDATE_POOL = 200
 PPR_CANDIDATES = 50
 DISTANCE_SCALE_M = 3500.0
+# Hard geo cutoff: distance is otherwise only a soft ranking feature, so a
+# strong social/MF signal could surface a venue in another city entirely.
+# Suggestions must be actionable tonight — cap them to the user's city.
+MAX_SUGGESTION_RADIUS_M = 30_000.0
 EXCLUDED_TYPES = {"lodging", "hospital", "doctor", "pharmacy", "gas_station",
                   "car_repair", "atm", "bank", "dentist", "physiotherapist"}
 
@@ -688,6 +692,14 @@ def recommend_for_user(
         meta = m.venue_meta[vi]
         if meta["types"] & EXCLUDED_TYPES:
             continue
+        # Only venues near the user (or their activity centroid): being in Izmir
+        # must never suggest Marylebone. Coordinate-less venues are unverifiable,
+        # so they're dropped too whenever we know where the user is.
+        if origin is not None:
+            if meta["lat"] is None or meta["lng"] is None:
+                continue
+            if _haversine_m(origin[0], origin[1], meta["lat"], meta["lng"]) > MAX_SUGGESTION_RADIUS_M:
+                continue
         f = _features(m, user_id, ui, vi, origin, ppr)
         fz = (f - m.feat_mean) / m.feat_std if m.ranker_learned else f
         z = float(fz @ m.ranker_w + m.ranker_b)
