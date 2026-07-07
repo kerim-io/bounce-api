@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import select, func, or_
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
+from collections import defaultdict
 import logging
 
 from db.database import get_async_session
-from db.models import User, Conversation, DirectMessage
+from db.models import User, Conversation, DirectMessage, DirectMessageReaction, Bounce
 from api.dependencies import get_current_user
 from api.routes.websocket import manager as ws_manager
 from services.tasks import enqueue_notification, payload_to_dict
@@ -16,21 +17,18 @@ router = APIRouter(prefix="/messages", tags=["messages"])
 logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LENGTH = 2000
+ALLOWED_REACTIONS = {"❤️", "😂", "😮", "😢", "🔥", "👍", "👎", "🎉"}
 
 
 class SendMessageRequest(BaseModel):
-    text: str = Field(..., min_length=1, max_length=MAX_MESSAGE_LENGTH)
+    text: Optional[str] = Field(None, max_length=MAX_MESSAGE_LENGTH)
     client_id: Optional[str] = Field(None, max_length=64)  # UUID for optimistic-send dedupe
+    reply_to_id: Optional[int] = None                      # message being replied to
+    bounce_id: Optional[int] = None                        # bounce shared into the chat
 
 
-class MessageResponse(BaseModel):
-    id: int
-    conversation_id: int
-    sender_id: int
-    text: str
-    client_id: Optional[str]
-    created_at: datetime
-    read_at: Optional[datetime]
+class ReactRequest(BaseModel):
+    emoji: str = Field(..., max_length=16)
 
 
 class ConversationUser(BaseModel):
@@ -43,7 +41,7 @@ class ConversationUser(BaseModel):
 class ConversationResponse(BaseModel):
     conversation_id: int
     other_user: ConversationUser
-    last_message: Optional[MessageResponse]
+    last_message: Optional[Dict[str, Any]]
     unread_count: int
     last_message_at: datetime
 
@@ -72,17 +70,106 @@ def _other_user_id(conversation: Conversation, me: int) -> int:
     return conversation.user2_id if conversation.user1_id == me else conversation.user1_id
 
 
-def _message_dict(message: DirectMessage) -> dict:
+def _is_participant(conversation: Conversation, user_id: int) -> bool:
+    return user_id in (conversation.user1_id, conversation.user2_id)
+
+
+# ---------------------------------------------------------------------------
+# Serialization
+# ---------------------------------------------------------------------------
+
+def _bounce_card(bounce: Bounce) -> dict:
+    return {
+        "id": bounce.id,
+        "venue_name": bounce.venue_name,
+        "venue_address": bounce.venue_address,
+        "bounce_time": bounce.bounce_time.isoformat() if bounce.bounce_time else None,
+        "is_now": bounce.is_now,
+        "latitude": bounce.latitude,
+        "longitude": bounce.longitude,
+        "place_id": bounce.place_id,
+        "status": bounce.status,
+    }
+
+
+async def _serialize_messages(
+    db: AsyncSession, messages: List[DirectMessage]
+) -> List[dict]:
+    """Full message dicts with reply previews, reactions, and bounce cards — batch-loaded."""
+    if not messages:
+        return []
+
+    msg_ids = [m.id for m in messages]
+    reply_ids = [m.reply_to_id for m in messages if m.reply_to_id]
+    bounce_ids = [m.bounce_id for m in messages if m.bounce_id]
+
+    # Reactions grouped by message
+    reactions_by_msg: Dict[int, list] = defaultdict(list)
+    reaction_rows = await db.execute(
+        select(DirectMessageReaction).where(DirectMessageReaction.message_id.in_(msg_ids))
+    )
+    for r in reaction_rows.scalars().all():
+        reactions_by_msg[r.message_id].append({"user_id": r.user_id, "emoji": r.emoji})
+
+    # Replied-to previews
+    replies: Dict[int, dict] = {}
+    if reply_ids:
+        reply_rows = await db.execute(
+            select(DirectMessage).where(DirectMessage.id.in_(reply_ids))
+        )
+        for rm in reply_rows.scalars().all():
+            replies[rm.id] = {
+                "id": rm.id,
+                "sender_id": rm.sender_id,
+                "text": None if rm.deleted_at else rm.text,
+                "deleted": rm.deleted_at is not None,
+                "is_bounce": rm.bounce_id is not None,
+            }
+
+    # Bounce cards
+    bounces: Dict[int, dict] = {}
+    if bounce_ids:
+        bounce_rows = await db.execute(select(Bounce).where(Bounce.id.in_(bounce_ids)))
+        for b in bounce_rows.scalars().all():
+            bounces[b.id] = _bounce_card(b)
+
+    return [_message_dict(m, reactions_by_msg, replies, bounces) for m in messages]
+
+
+def _message_dict(
+    message: DirectMessage,
+    reactions_by_msg: Optional[Dict[int, list]] = None,
+    replies: Optional[Dict[int, dict]] = None,
+    bounces: Optional[Dict[int, dict]] = None,
+) -> dict:
+    reactions_by_msg = reactions_by_msg or {}
+    replies = replies or {}
+    bounces = bounces or {}
+    deleted = message.deleted_at is not None
     return {
         "id": message.id,
         "conversation_id": message.conversation_id,
         "sender_id": message.sender_id,
-        "text": message.text,
+        "text": None if deleted else message.text,
         "client_id": message.client_id,
         "created_at": message.created_at.isoformat() if message.created_at else None,
         "read_at": message.read_at.isoformat() if message.read_at else None,
+        "deleted": deleted,
+        "reply_to_id": message.reply_to_id,
+        "reply_to": replies.get(message.reply_to_id) if message.reply_to_id else None,
+        "bounce_id": message.bounce_id,
+        "bounce": bounces.get(message.bounce_id) if message.bounce_id else None,
+        "reactions": reactions_by_msg.get(message.id, []),
     }
 
+
+async def _serialize_one(db: AsyncSession, message: DirectMessage) -> dict:
+    return (await _serialize_messages(db, [message]))[0]
+
+
+# ---------------------------------------------------------------------------
+# Conversations
+# ---------------------------------------------------------------------------
 
 @router.get("/conversations", response_model=List[ConversationResponse])
 async def get_conversations(
@@ -104,7 +191,6 @@ async def get_conversations(
 
     conversation_ids = [c.id for c in conversations]
 
-    # Last message per conversation
     last_msg_result = await db.execute(
         select(DirectMessage).where(
             DirectMessage.id.in_(
@@ -115,20 +201,26 @@ async def get_conversations(
         )
     )
     last_messages = {m.conversation_id: m for m in last_msg_result.scalars().all()}
+    serialized_last = {
+        m.conversation_id: d
+        for m, d in zip(
+            last_messages.values(),
+            await _serialize_messages(db, list(last_messages.values()))
+        )
+    }
 
-    # Unread counts (messages from the other user I haven't read)
     unread_result = await db.execute(
         select(DirectMessage.conversation_id, func.count(DirectMessage.id))
         .where(
             DirectMessage.conversation_id.in_(conversation_ids),
             DirectMessage.sender_id != current_user.id,
-            DirectMessage.read_at.is_(None)
+            DirectMessage.read_at.is_(None),
+            DirectMessage.deleted_at.is_(None)
         )
         .group_by(DirectMessage.conversation_id)
     )
     unread_counts = dict(unread_result.all())
 
-    # Other users, one query
     other_ids = [_other_user_id(c, current_user.id) for c in conversations]
     users_result = await db.execute(select(User).where(User.id.in_(other_ids)))
     users = {u.id: u for u in users_result.scalars().all()}
@@ -138,7 +230,6 @@ async def get_conversations(
         other = users.get(_other_user_id(conversation, current_user.id))
         if not other:
             continue
-        last = last_messages.get(conversation.id)
         out.append(ConversationResponse(
             conversation_id=conversation.id,
             other_user=ConversationUser(
@@ -147,15 +238,7 @@ async def get_conversations(
                 first_name=other.first_name,
                 profile_picture=other.profile_picture or other.instagram_profile_pic,
             ),
-            last_message=MessageResponse(
-                id=last.id,
-                conversation_id=last.conversation_id,
-                sender_id=last.sender_id,
-                text=last.text,
-                client_id=last.client_id,
-                created_at=last.created_at,
-                read_at=last.read_at,
-            ) if last else None,
+            last_message=serialized_last.get(conversation.id),
             unread_count=unread_counts.get(conversation.id, 0),
             last_message_at=conversation.last_message_at,
         ))
@@ -170,10 +253,7 @@ async def get_messages_with_user(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session)
 ):
-    """
-    Message history with a user, newest first (paginate with before_id).
-    Doesn't create a conversation — returns empty until the first message.
-    """
+    """Message history with a user, newest first (paginate with before_id)."""
     limit = min(max(limit, 1), 100)
 
     u1, u2 = _normalized_pair(current_user.id, user_id)
@@ -197,18 +277,22 @@ async def get_messages_with_user(
 
     return {
         "conversation_id": conversation.id,
-        "messages": [_message_dict(m) for m in messages],
+        "messages": await _serialize_messages(db, list(messages)),
     }
 
 
-@router.post("/to/{user_id}", response_model=MessageResponse)
+# ---------------------------------------------------------------------------
+# Sending
+# ---------------------------------------------------------------------------
+
+@router.post("/to/{user_id}")
 async def send_message(
     user_id: int,
     body: SendMessageRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session)
 ):
-    """Send a DM: persists, pushes over WebSocket, and sends an APNs notification."""
+    """Send a DM (optionally a reply and/or a shared bounce): persist, push over WS + APNs."""
     if user_id == current_user.id:
         raise HTTPException(status_code=400, detail="Cannot message yourself")
 
@@ -217,11 +301,30 @@ async def send_message(
     if not recipient:
         raise HTTPException(status_code=404, detail="User not found")
 
-    text = body.text.strip()
-    if not text:
+    text = (body.text or "").strip() or None
+    if not text and not body.bounce_id:
         raise HTTPException(status_code=400, detail="Message is empty")
 
     conversation = await _get_or_create_conversation(db, current_user.id, user_id)
+
+    # Validate the replied-to message belongs to this conversation
+    reply_to_id = None
+    if body.reply_to_id:
+        parent_result = await db.execute(
+            select(DirectMessage).where(
+                DirectMessage.id == body.reply_to_id,
+                DirectMessage.conversation_id == conversation.id
+            )
+        )
+        if parent_result.scalar_one_or_none():
+            reply_to_id = body.reply_to_id
+
+    # Validate the shared bounce exists
+    bounce_id = None
+    if body.bounce_id:
+        bounce_result = await db.execute(select(Bounce).where(Bounce.id == body.bounce_id))
+        if bounce_result.scalar_one_or_none():
+            bounce_id = body.bounce_id
 
     # Dedupe retried optimistic sends (same client_id in this conversation)
     if body.client_id:
@@ -234,34 +337,29 @@ async def send_message(
         )
         existing = existing_result.scalar_one_or_none()
         if existing:
-            return MessageResponse(
-                id=existing.id,
-                conversation_id=existing.conversation_id,
-                sender_id=existing.sender_id,
-                text=existing.text,
-                client_id=existing.client_id,
-                created_at=existing.created_at,
-                read_at=existing.read_at,
-            )
+            return await _serialize_one(db, existing)
 
     message = DirectMessage(
         conversation_id=conversation.id,
         sender_id=current_user.id,
         text=text,
         client_id=body.client_id,
+        reply_to_id=reply_to_id,
+        bounce_id=bounce_id,
     )
     db.add(message)
     conversation.last_message_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(message)
 
+    serialized = await _serialize_one(db, message)
     sender_name = current_user.nickname or current_user.first_name or "Someone"
     sender_pic = current_user.profile_picture or current_user.instagram_profile_pic
 
-    # Realtime delivery to the recipient (all their devices/instances)
+    # Realtime delivery to the recipient
     await ws_manager.send_to_user(user_id, {
         "type": "dm",
-        "message": _message_dict(message),
+        "message": serialized,
         "sender": {
             "id": current_user.id,
             "nickname": current_user.nickname,
@@ -272,10 +370,14 @@ async def send_message(
 
     # Push notification (deep-links into the chat via conversation_id)
     from services.apns_service import NotificationPayload, NotificationType
+    if bounce_id and serialized.get("bounce"):
+        push_body = f"📍 sent a bounce · {serialized['bounce']['venue_name']}"
+    else:
+        push_body = text if text and len(text) <= 120 else ((text or "")[:117] + "...")
     payload = NotificationPayload(
         notification_type=NotificationType.MESSAGE,
         title=sender_name,
-        body=text if len(text) <= 120 else text[:117] + "...",
+        body=push_body,
         actor_id=current_user.id,
         actor_nickname=sender_name,
         actor_profile_picture=sender_pic,
@@ -283,16 +385,129 @@ async def send_message(
     )
     enqueue_notification(user_id, payload_to_dict(payload))
 
-    return MessageResponse(
-        id=message.id,
-        conversation_id=message.conversation_id,
-        sender_id=message.sender_id,
-        text=message.text,
-        client_id=message.client_id,
-        created_at=message.created_at,
-        read_at=message.read_at,
-    )
+    return serialized
 
+
+# ---------------------------------------------------------------------------
+# Reactions
+# ---------------------------------------------------------------------------
+
+async def _load_message_for_participant(
+    db: AsyncSession, message_id: int, user_id: int
+) -> tuple:
+    """Return (message, conversation) if the user participates, else raise 404."""
+    result = await db.execute(select(DirectMessage).where(DirectMessage.id == message_id))
+    message = result.scalar_one_or_none()
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    conv_result = await db.execute(
+        select(Conversation).where(Conversation.id == message.conversation_id)
+    )
+    conversation = conv_result.scalar_one_or_none()
+    if not conversation or not _is_participant(conversation, user_id):
+        raise HTTPException(status_code=404, detail="Message not found")
+    return message, conversation
+
+
+@router.post("/{message_id}/react")
+async def react_to_message(
+    message_id: int,
+    body: ReactRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Set (or replace) the current user's reaction to a message."""
+    if body.emoji not in ALLOWED_REACTIONS:
+        raise HTTPException(status_code=400, detail="Unsupported reaction")
+
+    message, conversation = await _load_message_for_participant(db, message_id, current_user.id)
+
+    existing_result = await db.execute(
+        select(DirectMessageReaction).where(
+            DirectMessageReaction.message_id == message_id,
+            DirectMessageReaction.user_id == current_user.id
+        )
+    )
+    reaction = existing_result.scalar_one_or_none()
+    if reaction:
+        reaction.emoji = body.emoji
+    else:
+        db.add(DirectMessageReaction(
+            message_id=message_id, user_id=current_user.id, emoji=body.emoji
+        ))
+    await db.commit()
+
+    await ws_manager.send_to_user(_other_user_id(conversation, current_user.id), {
+        "type": "dm_reaction",
+        "conversation_id": conversation.id,
+        "message_id": message_id,
+        "user_id": current_user.id,
+        "emoji": body.emoji,
+    })
+    return {"status": "success", "emoji": body.emoji}
+
+
+@router.delete("/{message_id}/react")
+async def remove_reaction(
+    message_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Remove the current user's reaction from a message."""
+    message, conversation = await _load_message_for_participant(db, message_id, current_user.id)
+
+    result = await db.execute(
+        select(DirectMessageReaction).where(
+            DirectMessageReaction.message_id == message_id,
+            DirectMessageReaction.user_id == current_user.id
+        )
+    )
+    reaction = result.scalar_one_or_none()
+    if reaction:
+        await db.delete(reaction)
+        await db.commit()
+
+    await ws_manager.send_to_user(_other_user_id(conversation, current_user.id), {
+        "type": "dm_reaction",
+        "conversation_id": conversation.id,
+        "message_id": message_id,
+        "user_id": current_user.id,
+        "emoji": None,
+    })
+    return {"status": "success"}
+
+
+# ---------------------------------------------------------------------------
+# Unsend
+# ---------------------------------------------------------------------------
+
+@router.post("/{message_id}/unsend")
+async def unsend_message(
+    message_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Unsend (soft-delete) a message. Only the sender may unsend."""
+    message, conversation = await _load_message_for_participant(db, message_id, current_user.id)
+    if message.sender_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Can only unsend your own messages")
+
+    if message.deleted_at is None:
+        message.deleted_at = datetime.now(timezone.utc)
+        await db.commit()
+
+    await ws_manager.send_to_user(_other_user_id(conversation, current_user.id), {
+        "type": "dm_unsend",
+        "conversation_id": conversation.id,
+        "message_id": message_id,
+    })
+    return {"status": "success"}
+
+
+# ---------------------------------------------------------------------------
+# Read receipts & unread
+# ---------------------------------------------------------------------------
 
 class MarkReadRequest(BaseModel):
     up_to_message_id: int
@@ -310,7 +525,7 @@ async def mark_read(
         select(Conversation).where(Conversation.id == conversation_id)
     )
     conversation = result.scalar_one_or_none()
-    if not conversation or current_user.id not in (conversation.user1_id, conversation.user2_id):
+    if not conversation or not _is_participant(conversation, current_user.id):
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     now = datetime.now(timezone.utc)
@@ -354,7 +569,8 @@ async def get_unread_count(
                 Conversation.user2_id == current_user.id
             ),
             DirectMessage.sender_id != current_user.id,
-            DirectMessage.read_at.is_(None)
+            DirectMessage.read_at.is_(None),
+            DirectMessage.deleted_at.is_(None)
         )
     )
     return {"unread_count": result.scalar() or 0}

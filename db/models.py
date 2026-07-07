@@ -504,13 +504,35 @@ class DirectMessage(Base):
     id = Column(Integer, primary_key=True, index=True)
     conversation_id = Column(Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
     sender_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    text = Column(Text, nullable=False)
+    text = Column(Text, nullable=True)  # nullable: bounce-share messages can be text-free
     client_id = Column(String(64), nullable=True)  # Client-generated UUID for optimistic-send dedupe
+    # Reply: the message this one quotes (SET NULL so unsending the parent doesn't delete replies)
+    reply_to_id = Column(Integer, ForeignKey("direct_messages.id", ondelete="SET NULL"), nullable=True)
+    # Bounce share: a bounce sent into the chat, rendered as a tappable card
+    bounce_id = Column(Integer, ForeignKey("bounces.id", ondelete="SET NULL"), nullable=True)
+    # Unsend: soft delete so replies/threading stay intact; text is hidden client-side
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     read_at = Column(DateTime(timezone=True), nullable=True)
 
     conversation = relationship("Conversation")
     sender = relationship("User")
+    reactions = relationship("DirectMessageReaction", cascade="all, delete-orphan")
+
+
+class DirectMessageReaction(Base):
+    """An emoji reaction to a direct message. One reaction per user per message."""
+    __tablename__ = "direct_message_reactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(Integer, ForeignKey("direct_messages.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    emoji = Column(String(16), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('message_id', 'user_id', name='uq_message_reaction_user'),
+    )
 
 
 class FeaturedPlace(Base):

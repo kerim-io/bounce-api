@@ -59,6 +59,11 @@ async def run_migrations():
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_picture_3 TEXT",
         # Private profiles
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT FALSE",
+        # Direct message: replies, bounce shares, unsend
+        "ALTER TABLE direct_messages ALTER COLUMN text DROP NOT NULL",
+        "ALTER TABLE direct_messages ADD COLUMN IF NOT EXISTS reply_to_id INTEGER REFERENCES direct_messages(id) ON DELETE SET NULL",
+        "ALTER TABLE direct_messages ADD COLUMN IF NOT EXISTS bounce_id INTEGER REFERENCES bounces(id) ON DELETE SET NULL",
+        "ALTER TABLE direct_messages ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE",
         # Places table
         "ALTER TABLE places ADD COLUMN IF NOT EXISTS bounce_count INTEGER DEFAULT 0",
         "ALTER TABLE places ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE",
